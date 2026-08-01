@@ -1,4 +1,5 @@
-# Reusable workflow: deploy Unity WebGL builds to EC2 Games (self-hosted runner).
+# Reusable workflow: deploy Unity WebGL apps to EC2 Games (self-hosted runner).
+# Syncs the calling repository root (not only Build/) to deploy_path via rsync.
 #
 # Secrets (optional):
 #   DEPLOY_LOG_PATH — deploy log file (default: /var/log/ciatec/deploys.log)
@@ -80,9 +81,16 @@ jobs:
             sudo mv "$DEPLOY_PATH" "$BACKUP_PATH"
           fi
 
-          echo "Copying Build/ → $DEPLOY_PATH"
+          # Sync entire WebGL app tree (index.html, Build/, TemplateData/,
+          # StreamingAssets/, and any other files), preserving directories.
+          # --delete removes files at the destination that no longer exist in source.
+          # Exclude VCS/CI metadata so they are not published under Nginx.
+          echo "Syncing repository root → $DEPLOY_PATH"
           sudo mkdir -p "$DEPLOY_PATH"
-          sudo cp -a Build/. "$DEPLOY_PATH/"
+          sudo rsync -a --delete \
+            --exclude '.git/' \
+            --exclude '.github/' \
+            ./ "$DEPLOY_PATH/"
 
           echo "Fixing ownership for Nginx"
           sudo chown -R www-data:www-data "$DEPLOY_PATH"
