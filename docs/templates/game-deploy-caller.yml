@@ -1,0 +1,22 @@
+# TEMPLATE — copy to each Unity WebGL game repo as:
+#   .github/workflows/deploy.yml
+#
+# Then set game_name and deploy_path below.
+# Requires: org access to call ciatec-org/ciatec-devops workflows + self-hosted runner on EC2 Games.
+#
+# Secrets: inherit (organization / repo secrets, e.g. DEPLOY_LOG_PATH)
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    uses: ciatec-org/ciatec-devops/.github/workflows/deploy-webgl.yml@main
+    with:
+      game_name: trunktilt          # change per game: trunktilt | bubbles | downhill
+      deploy_path: /var/www/trunktilt  # change per game
+      environment: production
+    secrets: inherit

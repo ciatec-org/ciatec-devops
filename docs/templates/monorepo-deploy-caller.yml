@@ -1,0 +1,62 @@
+# TEMPLATE — copy to the monorepo as .github/workflows/deploy.yml
+#
+# Calls ciatec-org/ciatec-devops reusable Docker deploy workflow.
+# Secrets required (org inherit): EC2_API_HOST, EC2_SSH_KEY, EC2_SSH_USER
+
+name: Deploy Monorepo
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "api/**"
+      - "app/**"
+      - "docker-compose.yml"
+      - ".github/workflows/deploy.yml"
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      api: ${{ steps.filter.outputs.api }}
+      app: ${{ steps.filter.outputs.app }}
+      all: ${{ steps.filter.outputs.all }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            api:
+              - 'api/**'
+            app:
+              - 'app/**'
+            all:
+              - 'docker-compose.yml'
+
+  deploy-api:
+    needs: changes
+    if: needs.changes.outputs.api == 'true' && needs.changes.outputs.all != 'true'
+    uses: ciatec-org/ciatec-devops/.github/workflows/deploy-docker.yml@main
+    with:
+      service: api
+      environment: production
+    secrets: inherit
+
+  deploy-app:
+    needs: changes
+    if: needs.changes.outputs.app == 'true' && needs.changes.outputs.all != 'true'
+    uses: ciatec-org/ciatec-devops/.github/workflows/deploy-docker.yml@main
+    with:
+      service: app
+      environment: production
+    secrets: inherit
+
+  deploy-all:
+    needs: changes
+    if: needs.changes.outputs.all == 'true'
+    uses: ciatec-org/ciatec-devops/.github/workflows/deploy-docker.yml@main
+    with:
+      service: all
+      environment: production
+    secrets: inherit

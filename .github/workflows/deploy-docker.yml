@@ -1,0 +1,92 @@
+# Reusable workflow: deploy Docker Compose services on EC2 API/App via SSH.
+#
+# Required secrets (org or caller repo):
+#   EC2_API_HOST — IP or hostname of EC2 API/App
+#   EC2_SSH_KEY  — private SSH key (PEM)
+#   EC2_SSH_USER — SSH user (e.g. ubuntu)
+#
+# Optional env on remote host:
+#   COMPOSE_DIR, API_HEALTH_URL, APP_HEALTH_URL, DEPLOY_LOG_PATH, DB_HOST
+
+name: Deploy Docker
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: "api | app | all"
+        required: false
+        type: string
+        default: all
+      environment:
+        description: Target environment label
+        required: false
+        type: string
+        default: production
+    secrets:
+      EC2_API_HOST:
+        required: true
+      EC2_SSH_KEY:
+        required: true
+      EC2_SSH_USER:
+        required: true
+
+jobs:
+  deploy:
+    name: Deploy Docker (${{ inputs.service }})
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout ciatec-devops (scripts)
+        uses: actions/checkout@v4
+
+      - name: Validate service input
+        run: |
+          case "${{ inputs.service }}" in
+            api|app|all) echo "service=${{ inputs.service }}" ;;
+            *) echo "Invalid service: ${{ inputs.service }}"; exit 1 ;;
+          esac
+
+      - name: Copy deploy scripts to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_API_HOST }}
+          username: ${{ secrets.EC2_SSH_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "scripts/deploy/deploy-docker.sh,scripts/deploy/run-migrations.sh"
+          target: "/opt/ciatec/scripts"
+          strip_components: 2
+
+      - name: Run remote deploy
+        id: deploy
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_API_HOST }}
+          username: ${{ secrets.EC2_SSH_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          # Do not fail the action on exit 2 (rollback); we interpret below
+          script_stop: false
+          script: |
+            set -uo pipefail
+            chmod +x /opt/ciatec/scripts/deploy-docker.sh
+            chmod +x /opt/ciatec/scripts/run-migrations.sh 2>/dev/null || true
+            /opt/ciatec/scripts/deploy-docker.sh "${{ inputs.service }}"
+            rc=$?
+            echo "DEPLOY_EXIT_CODE=$rc"
+            if [ -f /var/log/ciatec/deploys.log ]; then
+              echo "---- last deploy log lines ----"
+              tail -n 30 /var/log/ciatec/deploys.log || true
+            fi
+            exit "$rc"
+
+      - name: Interpret deploy result
+        if: always()
+        run: |
+          echo "SSH step outcome: ${{ steps.deploy.outcome }}"
+          # appleboy surfaces non-zero as failure. Treat rollback (exit 2) as warning when possible.
+          if [ "${{ steps.deploy.outcome }}" = "success" ]; then
+            echo "✅ Deploy succeeded"
+            exit 0
+          fi
+          echo "::warning::Deploy step reported failure — if remote exit was 2, rollback ran successfully; inspect logs above."
+          exit 1

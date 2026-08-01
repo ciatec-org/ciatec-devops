@@ -1,0 +1,105 @@
+# Reusable workflow: deploy Unity WebGL builds to EC2 Games (self-hosted runner).
+#
+# Secrets (optional):
+#   DEPLOY_LOG_PATH — deploy log file (default: /var/log/ciatec/deploys.log)
+#
+# Called from game repos via workflow_call (see docs/templates/game-deploy-caller.yml).
+
+name: Deploy WebGL
+
+on:
+  workflow_call:
+    inputs:
+      game_name:
+        description: Game identifier (e.g. trunktilt, bubbles, downhill)
+        required: true
+        type: string
+      deploy_path:
+        description: Absolute path on the server (e.g. /var/www/trunktilt)
+        required: true
+        type: string
+      environment:
+        description: Target environment label
+        required: false
+        type: string
+        default: production
+    secrets:
+      DEPLOY_LOG_PATH:
+        required: false
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.game_name }}
+    runs-on: self-hosted
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout calling repository
+        uses: actions/checkout@v4
+
+      - name: Validate Build/ folder
+        run: |
+          set -euo pipefail
+          if [ ! -d "Build" ]; then
+            echo "❌ Build/ folder not found in repository root"
+            exit 1
+          fi
+          echo "✅ Build/ found"
+
+      - name: Deploy with backup and nginx reload
+        env:
+          DEPLOY_PATH: ${{ inputs.deploy_path }}
+          GAME_NAME: ${{ inputs.game_name }}
+          # Optional; empty falls back in shell below
+          DEPLOY_LOG_PATH: ${{ secrets.DEPLOY_LOG_PATH }}
+        run: |
+          set -euo pipefail
+          DEPLOY_LOG_PATH="${DEPLOY_LOG_PATH:-/var/log/ciatec/deploys.log}"
+          TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+          COMMIT_SHA="${GITHUB_SHA:-unknown}"
+          BACKUP_PATH="${DEPLOY_PATH}.bak.${TIMESTAMP}"
+          RESTORED=0
+
+          restore_backup() {
+            if [ "$RESTORED" -eq 1 ]; then
+              return 0
+            fi
+            if [ -d "$BACKUP_PATH" ]; then
+              echo "⚠️  Restoring backup from $BACKUP_PATH"
+              sudo rm -rf "$DEPLOY_PATH"
+              sudo mv "$BACKUP_PATH" "$DEPLOY_PATH"
+              RESTORED=1
+            fi
+          }
+          trap restore_backup ERR
+
+          sudo mkdir -p "$(dirname "$DEPLOY_PATH")"
+          sudo mkdir -p "$(dirname "$DEPLOY_LOG_PATH")"
+
+          if [ -d "$DEPLOY_PATH" ]; then
+            echo "Backing up current deploy → $BACKUP_PATH"
+            sudo mv "$DEPLOY_PATH" "$BACKUP_PATH"
+          fi
+
+          echo "Copying Build/ → $DEPLOY_PATH"
+          sudo mkdir -p "$DEPLOY_PATH"
+          sudo cp -a Build/. "$DEPLOY_PATH/"
+
+          echo "Fixing ownership for Nginx"
+          sudo chown -R www-data:www-data "$DEPLOY_PATH"
+
+          echo "Validating Nginx config"
+          sudo nginx -t
+
+          echo "Reloading Nginx"
+          sudo systemctl reload nginx
+
+          LOG_LINE="[${TIMESTAMP}] [${COMMIT_SHA}] deployed ${GAME_NAME} → ${DEPLOY_PATH}"
+          echo "$LOG_LINE" | sudo tee -a "$DEPLOY_LOG_PATH" >/dev/null
+          echo "✅ $LOG_LINE"
+
+          # Disable auto-restore on success
+          trap - ERR
+
+          # Optional: notify Slack/webhook (placeholder)
+          # curl -X POST -H 'Content-type: application/json' \
+          #   --data "{\"text\":\"$LOG_LINE\"}" "$SLACK_WEBHOOK_URL"
