@@ -1,0 +1,113 @@
+# Reusable workflow: pull and restart a Compose service on a self-hosted runner.
+# The EC2 runner must NEVER build images — only pull :main and up.
+#
+# Auth: GITHUB_TOKEN (packages: read). No PAT, no SSH secrets.
+#
+# Inputs assume production compose files already point at:
+#   image: ghcr.io/<owner>/<name>:main
+
+name: Deploy Compose
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: "Compose service name (e.g. api, web)"
+        required: true
+        type: string
+      compose_dir:
+        description: "Absolute path to the compose directory on the runner host"
+        required: true
+        type: string
+      health_url:
+        description: "URL polled until healthy (e.g. http://127.0.0.1:8000/health)"
+        required: true
+        type: string
+      smoke_cmd:
+        description: "Optional shell command run after health passes"
+        required: false
+        type: string
+        default: ""
+      runs_on:
+        description: "JSON array of self-hosted runner labels"
+        required: false
+        type: string
+        default: '["self-hosted","Linux","X64","ec2-ciatec-core"]'
+      health_attempts:
+        description: "Health check attempts"
+        required: false
+        type: number
+        default: 12
+      health_interval_seconds:
+        description: "Seconds between health attempts"
+        required: false
+        type: number
+        default: 15
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.service }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sync repository (compose files)
+        working-directory: ${{ inputs.compose_dir }}
+        run: |
+          set -euo pipefail
+          REPO_ROOT="$(git rev-parse --show-toplevel)"
+          echo "Repo root: $REPO_ROOT"
+          git -C "$REPO_ROOT" pull --ff-only
+
+      - name: Pull and restart service
+        working-directory: ${{ inputs.compose_dir }}
+        run: |
+          set -euo pipefail
+          echo "Compose dir: ${{ inputs.compose_dir }}"
+          echo "Service: ${{ inputs.service }}"
+          docker compose pull "${{ inputs.service }}"
+          docker compose up -d --no-deps --force-recreate "${{ inputs.service }}"
+          docker compose ps "${{ inputs.service }}"
+
+      - name: Health check
+        run: |
+          set -euo pipefail
+          URL="${{ inputs.health_url }}"
+          ATTEMPTS="${{ inputs.health_attempts }}"
+          INTERVAL="${{ inputs.health_interval_seconds }}"
+          echo "Waiting for health: $URL (attempts=$ATTEMPTS interval=${INTERVAL}s)"
+          i=1
+          while [ "$i" -le "$ATTEMPTS" ]; do
+            if curl -fsS --max-time 10 "$URL" >/dev/null 2>&1; then
+              echo "Health OK on attempt $i"
+              exit 0
+            fi
+            echo "Attempt $i/$ATTEMPTS failed; sleeping ${INTERVAL}s..."
+            sleep "$INTERVAL"
+            i=$((i + 1))
+          done
+          echo "::error::Health check failed for $URL"
+          echo "---- compose ps ----"
+          docker compose -f "${{ inputs.compose_dir }}/docker-compose.yml" ps || true
+          echo "---- recent logs ----"
+          docker compose -f "${{ inputs.compose_dir }}/docker-compose.yml" logs --tail=80 "${{ inputs.service }}" || true
+          exit 1
+
+      - name: Smoke
+        if: inputs.smoke_cmd != ''
+        run: |
+          set -euo pipefail
+          echo "Running smoke command..."
+          ${{ inputs.smoke_cmd }}
+
+      - name: Prune dangling images
+        if: success()
+        run: docker image prune -f || true
