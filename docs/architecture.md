@@ -8,7 +8,7 @@ Visão da infraestrutura e dos fluxos de deploy gerenciados por este repositóri
 flowchart TB
   subgraph github [GitHub]
     GamesRepos[ciatec-trunktilt / bubbles / downhill]
-    Monorepo[ciatec-monorepo]
+    Monorepo[ciatec-core]
     Devops[ciatec-devops]
     GamesRepos -->|workflow_call| Devops
     Monorepo -->|workflow_call| Devops
@@ -27,9 +27,11 @@ flowchart TB
   end
 
   subgraph ec2api [EC2_API_App]
+    RunnerApi[Self-hosted_Runner]
     Compose[Docker_Compose]
     API[ciatec-api_FastAPI]
     App[ciatec-app_React]
+    RunnerApi --> Compose
     Compose --> API
     Compose --> App
   end
@@ -38,7 +40,7 @@ flowchart TB
   API --> RDS
 
   Devops -->|self-hosted_WebGL| Runner
-  Devops -->|SSH_Docker_deploy| Compose
+  Devops -->|GHCR_then_self-hosted| RunnerApi
 ```
 
 ## Ambientes
@@ -66,13 +68,14 @@ Caminhos de deploy (padrão; ajustar conforme servidor real):
 |------|--------|
 | SO | Ubuntu |
 | Runtime | Docker + Docker Compose |
-| Compose dir (padrão) | `/opt/ciatec/` |
-| Banco | PostgreSQL RDS (externo; não gerenciado pelo Compose) |
+| Monorepo clone | `/home/ubuntu/ciatec-core` (`src/api`, `src/app`) |
+| CI/CD | Self-hosted runner (`ec2-ciatec-core`) + imagens GHCR |
+| Banco | PostgreSQL RDS (externo; `.env` só na EC2) |
 
-| Serviço | Stack | Container | Responsabilidade |
-|---------|-------|-----------|------------------|
-| `api` | FastAPI | `ciatec-api` | API REST, migrações Alembic |
-| `app` | React/Vite | `ciatec-app` | Frontend web |
+| Serviço | Stack | Imagem | Responsabilidade |
+|---------|-------|--------|------------------|
+| `api` | FastAPI | `ghcr.io/ciatec-org/ciatec-api:main` | API REST; Alembic no start do container |
+| `web` | React/Vite → Nginx | `ghcr.io/ciatec-org/ciatec-app:main` | Frontend estático |
 
 ## Serviços, portas e responsabilidades
 
@@ -81,11 +84,9 @@ Caminhos de deploy (padrão; ajustar conforme servidor real):
 | TrunkTilt | EC2 Games | 80/443 | HTTP(S) | Jogo WebGL |
 | Bubbles | EC2 Games | 80/443 | HTTP(S) | Jogo WebGL |
 | Downhill | EC2 Games | 80/443 | HTTP(S) | Jogo WebGL |
-| ciatec-api | EC2 API/App | 8000 (interno) / 443 (público) | HTTP(S) | API + `/health` |
-| ciatec-app | EC2 API/App | 80/443 | HTTP(S) | UI |
+| ciatec-api | EC2 API/App | 8000 (interno) / 443 (`api.ciatec.org`) | HTTP(S) | API + `/health` |
+| ciatec-app | EC2 API/App | 8081 (interno) / 443 (`research.ciatec.org`) | HTTP(S) | UI |
 | PostgreSQL | RDS | 5432 | TCP | Dados persistentes |
-
-Portas públicas exatas dependem de Nginx/ALB/security groups — documentar valores reais no runbook do ambiente quando confirmados.
 
 ## Fluxos de deploy
 
@@ -99,14 +100,15 @@ Portas públicas exatas dependem de Nginx/ALB/security groups — documentar val
 6. Registra log em `/var/log/ciatec/deploys.log`
 7. Em falha após backup: restaura `.bak`
 
-### Docker — API + App (EC2 API/App)
+### Docker — API + App (EC2 API/App) — fluxo actual
 
-1. Push em `main` no monorepo (com `paths` filter por `api/`, `app/`, `docker-compose.yml`)
-2. Caller invoca `ciatec-devops/.github/workflows/deploy-docker.yml`
-3. Runner GitHub-hosted conecta via **SSH** à EC2 API/App
-4. Executa `scripts/deploy/deploy-docker.sh` (`api` | `app` | `all`)
-5. `docker compose pull` → `up -d` → health check → rollback se falhar
-6. No deploy da API: migrações Alembic **antes** de promover o container novo (Sprint 4)
+1. Push em `main` no `ciatec-core` (`src/api/**` ou `src/app/**`) ou `workflow_dispatch`
+2. Caller no monorepo: `deploy-api.yml` / `deploy-app.yml`
+3. **GitHub-hosted:** CI → `build-push-ghcr.yml` → tags `:main` e `:sha-<7>` (`GITHUB_TOKEN`, sem PAT)
+4. **Self-hosted** na EC2 (`deploy-compose.yml`): `git pull` → login GHCR → `docker compose pull` → `up -d` → health (+ smoke na API)
+5. Migrações Alembic: no `CMD` da imagem da API (não duplicar no script de deploy)
+
+> Legado: `deploy-docker.yml` (SSH + scripts em `/opt/ciatec`) permanece no repo mas **não** é o caminho do `ciatec-core`.
 
 ## Variáveis de ambiente (nomes apenas)
 
@@ -123,18 +125,16 @@ Portas públicas exatas dependem de Nginx/ALB/security groups — documentar val
 
 | Variável | Uso |
 |----------|-----|
-| `COMPOSE_DIR` | Diretório do `docker-compose.yml` |
-| `API_HEALTH_URL` | Endpoint de health da API |
-| `APP_HEALTH_URL` | URL do App |
-| `DATABASE_URL` / connection string | Acesso da API ao RDS (no container) |
+| `DATABASE_URL` / secrets no `.env` | Só na EC2 (`src/api/.env`); nunca no CI |
+| Compose | `image: ghcr.io/ciatec-org/ciatec-*:main` em `src/api` e `src/app` |
 
-### Secrets GitHub (organização / repos)
+### Secrets GitHub
 
 | Secret | Uso |
 |--------|-----|
-| `EC2_API_HOST` | Host da EC2 API/App |
-| `EC2_SSH_KEY` | Chave privada SSH |
-| `EC2_SSH_USER` | Usuário SSH (ex.: `ubuntu`) |
+| *(nenhum obrigatório para monorepo GHCR)* | `GITHUB_TOKEN` com `packages: write` / `packages: read` |
+| `EC2_API_HOST` / `EC2_SSH_*` | Só para o fluxo SSH legado (`deploy-docker.yml`) |
+| `DEPLOY_LOG_PATH` | WebGL (opcional) |
 
 ## Repositórios relacionados
 
@@ -144,4 +144,6 @@ Portas públicas exatas dependem de Nginx/ALB/security groups — documentar val
 | `ciatec-trunktilt` | Jogo WebGL + caller de deploy |
 | `ciatec-bubbles` | Jogo WebGL + caller de deploy |
 | `ciatec-downhill` | Jogo WebGL + caller de deploy |
-| `ciatec-monorepo` | API + App + caller de deploy Docker |
+| `ciatec-core` | Monorepo API + App + callers GHCR / self-hosted |
+
+Runbook monorepo: [runbooks/deploy-monorepo.md](runbooks/deploy-monorepo.md).
