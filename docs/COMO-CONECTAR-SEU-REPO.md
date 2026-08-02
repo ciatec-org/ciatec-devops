@@ -73,26 +73,30 @@ Use `secrets: inherit` no caller (já vem no template).
 
 ---
 
-## B) Monorepo (API + App Docker)
+## B) Monorepo (API + App Docker via GHCR)
 
 ### O que o devops faz
 
-Via **SSH** na EC2 API/App: `docker compose pull/up`, health check, rollback; na API, migrações Alembic antes.
+1. **GitHub-hosted:** testes + `docker build` + push para GHCR (`:main` e `:sha-XXXXXXX`)
+2. **Self-hosted runner na EC2:** `docker compose pull` → `up -d` → health (+ smoke na API)
+
+Sem SSH secrets e sem PAT — só `GITHUB_TOKEN` (`packages: write` / `packages: read`).
 
 ### Passo a passo
 
-1. Configure os secrets na **organização** (ou no monorepo):
+1. Runner self-hosted em `ciatec-core` (label `ec2-ciatec-core`), Idle, com acesso Docker
+2. Compose em produção aponta para imagens GHCR:
+   - `ghcr.io/ciatec-org/ciatec-api:main`
+   - `ghcr.io/ciatec-org/ciatec-app:main`
+3. No monorepo, callers:
+   - [`.github/workflows/deploy-api.yml`](../../ciatec-core) (no repo produto)
+   - [`.github/workflows/deploy-app.yml`](../../ciatec-core)
+   Template de referência: [`docs/templates/monorepo-deploy-caller.yml`](templates/monorepo-deploy-caller.yml)
+4. Push em `main` em `src/api/**` ou `src/app/**` → Actions faz CI → GHCR → deploy
 
-| Secret | Conteúdo |
-|--------|----------|
-| `EC2_API_HOST` | IP/hostname da EC2 API/App |
-| `EC2_SSH_KEY` | Chave privada PEM |
-| `EC2_SSH_USER` | Usuário SSH (ex.: `ubuntu`) |
+### Secrets
 
-2. No monorepo, crie `.github/workflows/deploy.yml` copiando:
-   [`docs/templates/monorepo-deploy-caller.yml`](templates/monorepo-deploy-caller.yml)
-3. Confirme que as pastas no monorepo batem com o template (`api/`, `app/`, `docker-compose.yml`). Se os nomes forem outros, ajuste o `paths-filter`.
-4. Push em `main` alterando `api/` ou `app/` → Actions chama o deploy certo.
+Nenhum secret de organização obrigatório para este fluxo.
 
 ### Runbook completo
 
@@ -113,10 +117,12 @@ Via **SSH** na EC2 API/App: `docker compose pull/up`, health check, rollback; na
 
 **Monorepo**
 
-- [ ] Secrets `EC2_API_HOST`, `EC2_SSH_KEY`, `EC2_SSH_USER`
-- [ ] Scripts em `/opt/ciatec/scripts/` (o workflow copia automaticamente)
-- [ ] `.github/workflows/deploy.yml` no monorepo
-- [ ] Compose em `/opt/ciatec/` (ou `COMPOSE_DIR` no servidor)
+- [ ] Runner self-hosted Idle em `ciatec-core` (label `ec2-ciatec-core`)
+- [ ] `ciatec-devops` acessível a repos da org (Actions)
+- [ ] Callers `deploy-api.yml` / `deploy-app.yml` no monorepo
+- [ ] Compose com `image: ghcr.io/ciatec-org/ciatec-*:main`
+- [ ] `.env` da API só na EC2
+- [ ] Acesso cross-repo Actions liberado
 
 ---
 
@@ -124,8 +130,8 @@ Via **SSH** na EC2 API/App: `docker compose pull/up`, health check, rollback; na
 
 1. GitHub → Actions no repo do produto (job verde/vermelho)
 2. Servidor WebGL: `tail -n 20 /var/log/ciatec/deploys.log`
-3. Servidor Docker: `docker compose -f /opt/ciatec/docker-compose.yml ps`
-4. Health: rode `scripts/health/check-all.sh` (com URLs exportadas)
+3. Servidor monorepo Docker: `docker compose -f ~/ciatec-core/src/api/docker-compose.yml ps` (e o equivalente em `src/app`)
+4. Health: `curl -fsS http://127.0.0.1:8000/health` e `curl -I http://127.0.0.1:8081`
 
 ---
 

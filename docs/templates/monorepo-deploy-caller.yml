@@ -1,62 +1,46 @@
-# TEMPLATE — copy to the monorepo as .github/workflows/deploy.yml
+# TEMPLATE — copy pieces into the monorepo as separate callers
 #
-# Calls ciatec-org/ciatec-devops reusable Docker deploy workflow.
-# Secrets required (org inherit): EC2_API_HOST, EC2_SSH_KEY, EC2_SSH_USER
+# Preferred layout in ciatec-core:
+#   .github/workflows/deploy-api.yml
+#   .github/workflows/deploy-app.yml
+#
+# See docs/runbooks/deploy-monorepo.md for the full GHCR + self-hosted runner flow.
+# Reusable workflows live in ciatec-org/ciatec-devops:
+#   build-push-ghcr.yml
+#   deploy-compose.yml
+#
+# No org secrets required (GITHUB_TOKEN only).
 
-name: Deploy Monorepo
+name: Deploy API (example caller)
 
 on:
   push:
     branches: [main]
     paths:
-      - "api/**"
-      - "app/**"
-      - "docker-compose.yml"
-      - ".github/workflows/deploy.yml"
+      - "src/api/**"
+      - ".github/workflows/deploy-api.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-  changes:
-    runs-on: ubuntu-latest
-    outputs:
-      api: ${{ steps.filter.outputs.api }}
-      app: ${{ steps.filter.outputs.app }}
-      all: ${{ steps.filter.outputs.all }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            api:
-              - 'api/**'
-            app:
-              - 'app/**'
-            all:
-              - 'docker-compose.yml'
+  build-push:
+    permissions:
+      contents: read
+      packages: write
+    uses: ciatec-org/ciatec-devops/.github/workflows/build-push-ghcr.yml@main
+    with:
+      image_name: ciatec-api
+      context: src/api
 
-  deploy-api:
-    needs: changes
-    if: needs.changes.outputs.api == 'true' && needs.changes.outputs.all != 'true'
-    uses: ciatec-org/ciatec-devops/.github/workflows/deploy-docker.yml@main
+  deploy:
+    needs: build-push
+    permissions:
+      contents: read
+      packages: read
+    uses: ciatec-org/ciatec-devops/.github/workflows/deploy-compose.yml@main
     with:
       service: api
-      environment: production
-    secrets: inherit
-
-  deploy-app:
-    needs: changes
-    if: needs.changes.outputs.app == 'true' && needs.changes.outputs.all != 'true'
-    uses: ciatec-org/ciatec-devops/.github/workflows/deploy-docker.yml@main
-    with:
-      service: app
-      environment: production
-    secrets: inherit
-
-  deploy-all:
-    needs: changes
-    if: needs.changes.outputs.all == 'true'
-    uses: ciatec-org/ciatec-devops/.github/workflows/deploy-docker.yml@main
-    with:
-      service: all
-      environment: production
-    secrets: inherit
+      compose_dir: /home/ubuntu/ciatec-core/src/api
+      health_url: http://127.0.0.1:8000/health

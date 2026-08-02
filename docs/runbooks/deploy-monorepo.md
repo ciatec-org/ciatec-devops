@@ -1,60 +1,57 @@
-# Runbook — Deploy do monorepo (API + App)
+# Runbook — Deploy do monorepo (API + App via GHCR)
 
-## Secrets na organização GitHub
+Modelo actual: **CI e build no GitHub-hosted** → push para GHCR (`:main` + `:sha-XXXXXXX`) → **deploy no self-hosted runner** da EC2 (`docker compose pull` / `up`).
 
-Em **Organization → Settings → Secrets and variables → Actions** (ou no repo do monorepo):
+Não usa SSH secrets nem PAT. Autenticação GHCR via `GITHUB_TOKEN`.
 
-| Secret | Conteúdo |
-|--------|----------|
-| `EC2_API_HOST` | IP/hostname da EC2 API/App |
-| `EC2_SSH_KEY` | Chave privada PEM (conteúdo completo) |
-| `EC2_SSH_USER` | Usuário SSH (ex.: `ubuntu`) |
+## Pré-requisitos (uma vez)
 
-Garanta que o monorepo pode chamar workflows de `ciatec-org/ciatec-devops`.
+### GitHub
 
-## Instalar o caller
+1. `ciatec-devops` → Settings → Actions → General → **Accessible from repositories in the organization**
+2. `ciatec-core` → Settings → Actions → General → permitir Actions / reusable workflows
+3. Self-hosted runner registado em `ciatec-core` com label `ec2-ciatec-core` (Idle)
 
-Copie [`docs/templates/monorepo-deploy-caller.yml`](../templates/monorepo-deploy-caller.yml) para o monorepo como `.github/workflows/deploy.yml`.
+### EC2
 
-## Testar manualmente antes do CD
+1. Runner instalado como serviço (`~/actions-runner`, `svc.sh install/start`)
+2. User do runner no grupo `docker` (`docker ps` sem sudo)
+3. Clone do monorepo em `/home/ubuntu/ciatec-core` com compose a apontar para `:main`
+4. Nginx inalterado: `api.ciatec.org → :8000`, `research.ciatec.org → :8081`
+5. `.env` da API permanece em `src/api/.env` (nunca no CI)
 
-Na EC2 API/App:
+## Workflows
 
-```bash
-export COMPOSE_DIR=/opt/ciatec
-export API_HEALTH_URL=http://127.0.0.1:8000/health
-export APP_HEALTH_URL=http://127.0.0.1:80
+| Repo | Ficheiro | Papel |
+|------|----------|-------|
+| `ciatec-devops` | `build-push-ghcr.yml` | Reusável: build + push GHCR |
+| `ciatec-devops` | `deploy-compose.yml` | Reusável: pull/up/health/smoke no runner |
+| `ciatec-core` | `deploy-api.yml` | Caller API |
+| `ciatec-core` | `deploy-app.yml` | Caller App |
 
-# Copiar scripts do repo devops
-sudo mkdir -p /opt/ciatec/scripts
-sudo cp deploy-docker.sh run-migrations.sh /opt/ciatec/scripts/
-sudo chmod +x /opt/ciatec/scripts/*.sh
+## Tags GHCR
 
-/opt/ciatec/scripts/deploy-docker.sh api --dry-run
-/opt/ciatec/scripts/deploy-docker.sh api
-```
-
-Ou dispare o workflow reutilizável manualmente via `workflow_dispatch` (se adicionado) / Actions UI no monorepo após o primeiro push.
-
-## Logs no servidor
-
-```bash
-tail -f /var/log/ciatec/deploys.log
-tail -f /var/log/ciatec/migrations.log
-docker compose -f /opt/ciatec/docker-compose.yml ps
-```
+- `ghcr.io/ciatec-org/ciatec-api:main` — produção (compose)
+- `ghcr.io/ciatec-org/ciatec-api:sha-<7>` — histórico / rollback manual
+- Idem para `ciatec-app`
 
 ## Rollback manual
 
 ```bash
-cd /opt/ciatec
-# listar imagens locais
-docker images | head
-
-# subir de novo um tag conhecido
-docker compose pull api   # ou pin de tag anterior no compose
-docker compose up -d --no-deps api
-curl -fsS "$API_HEALTH_URL"
+cd /home/ubuntu/ciatec-core/src/api
+docker pull ghcr.io/ciatec-org/ciatec-api:sha-ABCDEF0
+docker tag ghcr.io/ciatec-org/ciatec-api:sha-ABCDEF0 ghcr.io/ciatec-org/ciatec-api:main
+docker compose up -d --no-deps --force-recreate api
+curl -fsS http://127.0.0.1:8000/health
 ```
 
-Exit codes do script: `0` ok · `1` falha · `2` rollback automático executado.
+## Ordem de publicação dos repos
+
+1. Push dos reusáveis em `ciatec-devops` (`main`)
+2. Push dos callers + compose em `ciatec-core` (`main`)
+3. Disparar `workflow_dispatch` em Deploy API / Deploy App, ou push em `src/api/**` / `src/app/**`
+
+## Logs
+
+- Actions no `ciatec-core`
+- Na EC2: `docker compose -f ~/ciatec-core/src/api/docker-compose.yml logs --tail=80 api`
