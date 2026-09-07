@@ -104,6 +104,28 @@ Nenhum secret de organização obrigatório para este fluxo.
 
 ---
 
+## C) App Docker via GHCR **sem** clone permanente (ex. ciatec-ht)
+
+### O que o devops faz
+
+1. **GitHub-hosted:** `docker build` + push GHCR
+2. **Self-hosted:** `actions/checkout` (workspace do job) → `compose pull/up` → health
+
+Secrets/env ficam só no host (ex. `/opt/ciatec-ht/api.env` + `secrets/`). Sem Deploy Key, sem PAT, sem `/home/ubuntu/<repo>` permanente.
+
+### Passo a passo
+
+1. Runner self-hosted no repo (label dedicada), Idle, grupo `docker`
+2. Compose versionado no produto (ex. `deploy/docker-compose.yml`) apontando para `ghcr.io/<org>/<image>:main`
+3. Caller: template [`docs/templates/compose-checkout-deploy-caller.yml`](templates/compose-checkout-deploy-caller.yml)
+4. Reusável: `deploy-compose-checkout.yml`
+
+### Secrets
+
+Nenhum secret de organização obrigatório (`GITHUB_TOKEN` apenas).
+
+---
+
 ## Checklist rápido
 
 **Jogo WebGL**

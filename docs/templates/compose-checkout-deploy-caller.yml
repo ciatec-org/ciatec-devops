@@ -1,0 +1,48 @@
+# TEMPLATE — caller for apps without a permanent git clone on the EC2.
+#
+# Flow: build-push-ghcr (ubuntu) → deploy-compose-checkout (self-hosted).
+# Host keeps only runtime secrets (e.g. /opt/my-app/api.env + secrets/).
+# Compose file lives in the product repo (default: deploy/docker-compose.yml).
+#
+# Reusable workflows:
+#   ciatec-org/ciatec-devops/.github/workflows/build-push-ghcr.yml@main
+#   ciatec-org/ciatec-devops/.github/workflows/deploy-compose-checkout.yml@main
+
+name: Deploy API (checkout model)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/api/**"
+      - "deploy/**"
+      - ".github/workflows/deploy-api.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-push:
+    permissions:
+      contents: read
+      packages: write
+    uses: ciatec-org/ciatec-devops/.github/workflows/build-push-ghcr.yml@main
+    with:
+      image_name: my-api
+      context: src/api
+
+  deploy:
+    needs: build-push
+    permissions:
+      contents: read
+      packages: read
+    uses: ciatec-org/ciatec-devops/.github/workflows/deploy-compose-checkout.yml@main
+    with:
+      service: api
+      compose_dir: deploy
+      health_url: http://127.0.0.1:8001/api/v1/health
+      runs_on: '["self-hosted","my-runner-label"]'
+      preflight_paths: |
+        /opt/my-app/api.env
+        /opt/my-app/secrets
