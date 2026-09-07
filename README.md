@@ -12,7 +12,8 @@ chamam workflows daqui ao fazer push em `main`, e a produção na EC2 é atualiz
 | Tipo | Fluxo |
 |------|--------|
 | **Jogos WebGL** | Caller no repo do jogo → `deploy-webgl.yml` → self-hosted runner na EC2 Games → Nginx |
-| **API + App** | Caller no `ciatec-core` → `build-push-ghcr.yml` + `deploy-compose.yml` → GHCR → self-hosted na EC2 |
+| **API + App (clone no host)** | Caller no `ciatec-core` → `build-push-ghcr.yml` + `deploy-compose.yml` → GHCR → `git pull` + compose |
+| **API (só secrets no host)** | Caller (ex. `ciatec-ht`) → `build-push-ghcr.yml` + `deploy-compose-checkout.yml` → GHCR → checkout + compose |
 
 ---
 

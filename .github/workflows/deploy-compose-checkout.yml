@@ -1,0 +1,139 @@
+# Reusable workflow: checkout caller repo on the self-hosted runner, then
+# pull/restart a Compose service from GHCR. No permanent git clone on the host.
+#
+# Use when secrets/env live only on the host (e.g. /opt/<app>/) and the compose
+# file is versioned in the product repo (e.g. deploy/docker-compose.yml).
+#
+# For hosts that already keep a permanent clone + git pull, use deploy-compose.yml.
+#
+# Auth: GITHUB_TOKEN only (contents + packages). No PAT, no SSH, no host git credentials.
+# The runner must NEVER build images — only pull :main (or tagged image in compose) and up.
+
+name: Deploy Compose (checkout)
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: "Compose service name (e.g. api)"
+        required: true
+        type: string
+      compose_dir:
+        description: "Compose directory relative to the repository root (e.g. deploy)"
+        required: false
+        type: string
+        default: deploy
+      compose_file:
+        description: "Compose file name inside compose_dir"
+        required: false
+        type: string
+        default: docker-compose.yml
+      health_url:
+        description: "URL polled until healthy"
+        required: true
+        type: string
+      smoke_cmd:
+        description: "Optional shell command after health passes"
+        required: false
+        type: string
+        default: ""
+      runs_on:
+        description: "JSON array of self-hosted runner labels"
+        required: true
+        type: string
+      health_attempts:
+        description: "Health check attempts"
+        required: false
+        type: number
+        default: 12
+      health_interval_seconds:
+        description: "Seconds between health attempts"
+        required: false
+        type: number
+        default: 15
+      preflight_paths:
+        description: "Newline-separated host paths that must exist before up (env/secrets)"
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.service }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Preflight host paths
+        if: inputs.preflight_paths != ''
+        run: |
+          set -euo pipefail
+          while IFS= read -r path; do
+            [ -z "$path" ] && continue
+            if [ ! -e "$path" ]; then
+              echo "::error::Missing required host path: $path"
+              exit 1
+            fi
+            echo "OK: $path"
+          done <<EOF
+          ${{ inputs.preflight_paths }}
+          EOF
+
+      - name: Pull and restart service
+        working-directory: ${{ inputs.compose_dir }}
+        run: |
+          set -euo pipefail
+          echo "Compose dir: ${{ inputs.compose_dir }}"
+          echo "Compose file: ${{ inputs.compose_file }}"
+          echo "Service: ${{ inputs.service }}"
+          test -f "${{ inputs.compose_file }}"
+          docker compose -f "${{ inputs.compose_file }}" pull "${{ inputs.service }}"
+          docker compose -f "${{ inputs.compose_file }}" up -d --no-deps --force-recreate "${{ inputs.service }}"
+          docker compose -f "${{ inputs.compose_file }}" ps "${{ inputs.service }}"
+
+      - name: Health check
+        run: |
+          set -euo pipefail
+          URL="${{ inputs.health_url }}"
+          ATTEMPTS="${{ inputs.health_attempts }}"
+          INTERVAL="${{ inputs.health_interval_seconds }}"
+          COMPOSE_FILE="${{ inputs.compose_dir }}/${{ inputs.compose_file }}"
+          echo "Waiting for health: $URL (attempts=$ATTEMPTS interval=${INTERVAL}s)"
+          i=1
+          while [ "$i" -le "$ATTEMPTS" ]; do
+            if curl -fsS --max-time 10 "$URL" >/dev/null 2>&1; then
+              echo "Health OK on attempt $i"
+              exit 0
+            fi
+            echo "Attempt $i/$ATTEMPTS failed; sleeping ${INTERVAL}s..."
+            sleep "$INTERVAL"
+            i=$((i + 1))
+          done
+          echo "::error::Health check failed for $URL"
+          echo "---- compose ps ----"
+          docker compose -f "$COMPOSE_FILE" ps || true
+          echo "---- recent logs ----"
+          docker compose -f "$COMPOSE_FILE" logs --tail=80 "${{ inputs.service }}" || true
+          exit 1
+
+      - name: Smoke
+        if: inputs.smoke_cmd != ''
+        run: |
+          set -euo pipefail
+          echo "Running smoke command..."
+          ${{ inputs.smoke_cmd }}
+
+      - name: Prune dangling images
+        if: success()
+        run: docker image prune -f || true
