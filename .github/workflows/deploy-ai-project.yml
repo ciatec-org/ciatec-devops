@@ -1,0 +1,131 @@
+# Deploy (create or update) a Python (Uvicorn/FastAPI) project on EC2 AI Research.
+# Runner: ciatec-ai-prod (labels: self-hosted, Linux, X64, ai-research).
+#
+# Create: clones /opt/ciatec-ai/<project_name>, systemd unit, Nginx vhost.
+# Update: git pull + recreate unit/Nginx + restart.
+#
+# Manual:  Actions → Deploy AI Project → Run workflow
+# Repos:   uses: ciatec-org/ciatec-devops/.github/workflows/deploy-ai-project.yml@main
+
+name: Deploy AI Project
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_name:
+        description: "Project identifier — /opt/ciatec-ai/<name>, systemd, URL path"
+        required: true
+        type: string
+      port:
+        description: "Local Uvicorn port (unique per project, e.g. 8001)"
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      project_name:
+        description: "Project identifier — matches /opt/ciatec-ai/<name> and systemd service"
+        required: true
+        type: string
+      port:
+        description: "Local port the Uvicorn process listens on (e.g. 8001)"
+        required: true
+        type: number
+      environment:
+        description: Target environment label
+        required: false
+        type: string
+        default: production
+      health_attempts:
+        description: Health check attempts
+        required: false
+        type: number
+        default: 12
+      health_interval_seconds:
+        description: Seconds between health attempts
+        required: false
+        type: number
+        default: 5
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.project_name }}
+    runs-on: [self-hosted, Linux, X64, ai-research]
+    environment: ${{ inputs.environment || 'production' }}
+
+    steps:
+      - name: Checkout ciatec-devops
+        uses: actions/checkout@v4
+        with:
+          repository: ciatec-org/ciatec-devops
+          ref: main
+
+      - name: Resolve GitHub repo
+        id: repo
+        run: |
+          set -euo pipefail
+          if [ "${{ github.repository }}" = "ciatec-org/ciatec-devops" ]; then
+            REPO="ciatec-org/${{ inputs.project_name }}"
+          else
+            REPO="${{ github.repository }}"
+          fi
+          echo "value=${REPO}" >> "$GITHUB_OUTPUT"
+          echo "Using GitHub repo: ${REPO}"
+
+      - name: Deploy or update project
+        run: |
+          set -euo pipefail
+          SCRIPT="scripts/setup/new-ai-project.sh"
+          if [ ! -f "$SCRIPT" ]; then
+            echo "::error::Script not found: $SCRIPT"
+            exit 1
+          fi
+          sudo bash "$SCRIPT" \
+            "${{ inputs.project_name }}" \
+            "${{ inputs.port }}" \
+            "${{ steps.repo.outputs.value }}"
+
+      - name: Verify systemd service is active
+        run: |
+          set -euo pipefail
+          SERVICE="${{ inputs.project_name }}"
+          echo "Checking systemd: ${SERVICE}"
+          sudo systemctl is-active --quiet "${SERVICE}"
+          sudo systemctl status "${SERVICE}" --no-pager
+          echo "Systemd service ${SERVICE} is active"
+
+      - name: Health check
+        run: |
+          set -euo pipefail
+          URL="http://127.0.0.1:${{ inputs.port }}/health"
+          ATTEMPTS="${{ inputs.health_attempts || 12 }}"
+          INTERVAL="${{ inputs.health_interval_seconds || 5 }}"
+          echo "Waiting for HTTP 200: $URL (attempts=$ATTEMPTS interval=${INTERVAL}s)"
+          i=1
+          while [ "$i" -le "$ATTEMPTS" ]; do
+            HTTP_CODE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "$URL" || true)"
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "Health OK (HTTP 200) on attempt $i"
+              exit 0
+            fi
+            echo "Attempt $i/$ATTEMPTS failed (HTTP ${HTTP_CODE:-none}); sleeping ${INTERVAL}s..."
+            sleep "$INTERVAL"
+            i=$((i + 1))
+          done
+          echo "::error::Health check failed for $URL (expected HTTP 200)"
+          echo "---- systemd status ----"
+          sudo systemctl status "${{ inputs.project_name }}" --no-pager || true
+          echo "---- last 50 log lines ----"
+          sudo journalctl -u "${{ inputs.project_name }}" -n 50 --no-pager || true
+          exit 1
+
+      - name: Log deploy
+        if: success()
+        run: |
+          set -euo pipefail
+          TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+          COMMIT_SHA="${GITHUB_SHA:-unknown}"
+          LOG_PATH="/var/log/ciatec/deploys.log"
+          sudo mkdir -p "$(dirname "$LOG_PATH")"
+          LOG_LINE="[${TIMESTAMP}] [${COMMIT_SHA}] deployed ${{ inputs.project_name }} → /opt/ciatec-ai/${{ inputs.project_name }} (port ${{ inputs.port }})"
+          echo "$LOG_LINE" | sudo tee -a "$LOG_PATH" >/dev/null
+          echo "$LOG_LINE"

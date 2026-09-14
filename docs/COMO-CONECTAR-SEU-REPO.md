@@ -69,7 +69,7 @@ Use `secrets: inherit` no caller (já vem no template).
 
 ### Runbook completo
 
-[adicionar-novo-jogo.md](runbooks/adicionar-novo-jogo.md)
+[add-new-game.md](runbooks/add-new-game.md)
 
 ---
 

@@ -1,41 +1,64 @@
-# Runbook — Deploy do monorepo (API + App via GHCR)
+# Runbook — Monorepo deploy (API + App via GHCR)
 
-Modelo actual: **CI e build no GitHub-hosted** → push para GHCR (`:main` + `:sha-XXXXXXX`) → **deploy no self-hosted runner** da EC2 (`docker compose pull` / `up`).
+Current model: **CI/build on GitHub-hosted** → push to GHCR (`:main` + `:sha-XXXXXXX`) → **deploy on the self-hosted runner** on EC2 (`docker compose pull` / `up`).
 
-Não usa SSH secrets nem PAT. Autenticação GHCR via `GITHUB_TOKEN`.
+No SSH secrets and no PAT. GHCR auth uses `GITHUB_TOKEN` only.
 
-## Pré-requisitos (uma vez)
+## Prerequisites (one-time)
 
 ### GitHub
 
 1. `ciatec-devops` → Settings → Actions → General → **Accessible from repositories in the organization**
-2. `ciatec-core` → Settings → Actions → General → permitir Actions / reusable workflows
-3. Self-hosted runner registado em `ciatec-core` com label `ec2-ciatec-core` (Idle)
+2. `ciatec-core` → Settings → Actions → General → allow Actions / reusable workflows
+3. Self-hosted runner registered on `ciatec-core` with label `ec2-ciatec-core` (Idle)
 
 ### EC2
 
-1. Runner instalado como serviço (`~/actions-runner`, `svc.sh install/start`)
-2. User do runner no grupo `docker` (`docker ps` sem sudo)
-3. Clone do monorepo em `/home/ubuntu/ciatec-core` com compose a apontar para `:main`
-4. Nginx inalterado: `api.ciatec.org → :8000`, `research.ciatec.org → :8081`
-5. `.env` da API permanece em `src/api/.env` (nunca no CI)
+1. Runner installed as a service (`~/actions-runner`, `svc.sh install/start`)
+2. Runner user in the `docker` group (`docker ps` without sudo)
+3. Permanent monorepo clone at `/home/ubuntu/ciatec-core` with compose images pointing at `:main`
+4. Nginx unchanged: `api.ciatec.org → :8000`, `research.ciatec.org → :8081`
+5. API `.env` stays at `src/api/.env` on the host (never in CI)
 
 ## Workflows
 
-| Repo | Ficheiro | Papel |
-|------|----------|-------|
-| `ciatec-devops` | `build-push-ghcr.yml` | Reusável: build + push GHCR |
-| `ciatec-devops` | `deploy-compose.yml` | Reusável: pull/up/health/smoke no runner |
-| `ciatec-core` | `deploy-api.yml` | Caller API |
-| `ciatec-core` | `deploy-app.yml` | Caller App |
+| Repo | File | Role |
+|------|------|------|
+| `ciatec-devops` | `build-push-ghcr.yml` | Reusable: build + push GHCR |
+| `ciatec-devops` | `deploy-compose.yml` | Reusable: `git pull` + `compose pull/up` + health (+ optional smoke) |
+| `ciatec-core` | `deploy-api.yml` | Caller for API |
+| `ciatec-core` | `deploy-app.yml` | Caller for App |
 
-## Tags GHCR
+Reference caller shape: [`docs/templates/monorepo-deploy-caller.yml`](../templates/monorepo-deploy-caller.yml).
 
-- `ghcr.io/ciatec-org/ciatec-api:main` — produção (compose)
-- `ghcr.io/ciatec-org/ciatec-api:sha-<7>` — histórico / rollback manual
-- Idem para `ciatec-app`
+### What `deploy-compose.yml` does
 
-## Rollback manual
+1. Login to GHCR with `GITHUB_TOKEN`
+2. `git pull --ff-only` from the repo root that owns `compose_dir`
+3. `docker compose pull <service>` then `up -d --no-deps --force-recreate`
+4. Poll `health_url` (default: 12 attempts, 15s apart)
+5. Optional `smoke_cmd`
+6. `docker image prune -f` on success
+
+Default runner labels: `self-hosted`, `Linux`, `X64`, `ec2-ciatec-core`.
+
+Example API caller inputs (from the template):
+
+| Input | Value |
+|-------|-------|
+| `service` | `api` |
+| `compose_dir` | `/home/ubuntu/ciatec-core/src/api` |
+| `health_url` | `http://127.0.0.1:8000/health` |
+
+## GHCR tags
+
+Published by `build-push-ghcr.yml` (owner lowercased):
+
+- `ghcr.io/ciatec-org/ciatec-api:main` — production (compose)
+- `ghcr.io/ciatec-org/ciatec-api:sha-<7>` — history / manual rollback
+- Same pattern for `ciatec-app`
+
+## Manual rollback
 
 ```bash
 cd /home/ubuntu/ciatec-core/src/api
@@ -45,13 +68,13 @@ docker compose up -d --no-deps --force-recreate api
 curl -fsS http://127.0.0.1:8000/health
 ```
 
-## Ordem de publicação dos repos
+## Publish order
 
-1. Push dos reusáveis em `ciatec-devops` (`main`)
-2. Push dos callers + compose em `ciatec-core` (`main`)
-3. Disparar `workflow_dispatch` em Deploy API / Deploy App, ou push em `src/api/**` / `src/app/**`
+1. Push reusable workflows on `ciatec-devops` (`main`)
+2. Push callers + compose on `ciatec-core` (`main`)
+3. Trigger `workflow_dispatch` on Deploy API / Deploy App, or push under `src/api/**` / `src/app/**`
 
 ## Logs
 
-- Actions no `ciatec-core`
-- Na EC2: `docker compose -f ~/ciatec-core/src/api/docker-compose.yml logs --tail=80 api`
+- Actions on `ciatec-core`
+- On EC2: `docker compose -f ~/ciatec-core/src/api/docker-compose.yml logs --tail=80 api`
