@@ -53,17 +53,6 @@ jobs:
     environment: ${{ inputs.environment || 'production' }}
 
     steps:
-      # Script lives in ciatec-devops; checkout into the runner workspace (ephemeral).
-      # Self-hosted runner is on the EC2, but nothing is installed permanently under /home/ubuntu.
-      - name: Checkout ciatec-devops
-        uses: actions/checkout@v4
-        with:
-          repository: ciatec-org/ciatec-devops
-          ref: main
-          sparse-checkout: |
-            scripts/setup/new-ai-project.sh
-          sparse-checkout-cone-mode: false
-
       - name: Resolve GitHub repo
         id: repo
         run: |
@@ -76,18 +65,14 @@ jobs:
           echo "value=${REPO}" >> "$GITHUB_OUTPUT"
           echo "Using GitHub repo: ${REPO}"
 
+      # Composite action from this private repo (same access as reusable workflows).
+      # Avoids actions/checkout of ciatec-devops — caller GITHUB_TOKEN cannot clone it.
       - name: Deploy or update project
-        run: |
-          set -euo pipefail
-          SCRIPT="scripts/setup/new-ai-project.sh"
-          if [ ! -f "$SCRIPT" ]; then
-            echo "::error::Script not found after checkout: $SCRIPT"
-            exit 1
-          fi
-          sudo bash "$SCRIPT" \
-            "${{ inputs.project_name }}" \
-            "${{ inputs.port }}" \
-            "${{ steps.repo.outputs.value }}"
+        uses: ciatec-org/ciatec-devops/.github/actions/new-ai-project@main
+        with:
+          project_name: ${{ inputs.project_name }}
+          port: ${{ inputs.port }}
+          github_repo: ${{ steps.repo.outputs.value }}
 
       - name: Verify systemd service is active
         run: |

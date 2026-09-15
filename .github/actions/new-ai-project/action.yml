@@ -1,0 +1,33 @@
+# Composite action: provision/update a Python AI project on EC2 AI Research.
+# Used by deploy-ai-project.yml so callers do not need to checkout this private repo
+# (GITHUB_TOKEN from the caller cannot clone ciatec-devops → "Repository not found").
+name: New AI Project
+description: Provision or update /opt/ciatec-ai/<project> (systemd + Nginx)
+
+inputs:
+  project_name:
+    description: Project identifier — /opt/ciatec-ai/<name>, systemd, URL path
+    required: true
+  port:
+    description: Local Uvicorn port (unique per project)
+    required: true
+  github_repo:
+    description: GitHub org/repo to clone (e.g. ciatec-org/ciatec-hello-ai)
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Run new-ai-project.sh
+      shell: bash
+      run: |
+        set -euo pipefail
+        SCRIPT="${GITHUB_ACTION_PATH}/new-ai-project.sh"
+        if [ ! -f "$SCRIPT" ]; then
+          echo "::error::Script not found: $SCRIPT"
+          exit 1
+        fi
+        sudo bash "$SCRIPT" \
+          "${{ inputs.project_name }}" \
+          "${{ inputs.port }}" \
+          "${{ inputs.github_repo }}"
