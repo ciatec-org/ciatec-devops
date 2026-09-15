@@ -53,6 +53,17 @@ jobs:
     environment: ${{ inputs.environment || 'production' }}
 
     steps:
+      # Script lives in ciatec-devops; checkout into the runner workspace (ephemeral).
+      # Self-hosted runner is on the EC2, but nothing is installed permanently under /home/ubuntu.
+      - name: Checkout ciatec-devops
+        uses: actions/checkout@v4
+        with:
+          repository: ciatec-org/ciatec-devops
+          ref: main
+          sparse-checkout: |
+            scripts/setup/new-ai-project.sh
+          sparse-checkout-cone-mode: false
+
       - name: Resolve GitHub repo
         id: repo
         run: |
@@ -68,10 +79,9 @@ jobs:
       - name: Deploy or update project
         run: |
           set -euo pipefail
-          # Script is installed on the EC2 host (not checked out from git).
-          SCRIPT="/home/ubuntu/ciatec-devops/scripts/setup/new-ai-project.sh"
+          SCRIPT="scripts/setup/new-ai-project.sh"
           if [ ! -f "$SCRIPT" ]; then
-            echo "::error::Script not found on EC2: $SCRIPT"
+            echo "::error::Script not found after checkout: $SCRIPT"
             exit 1
           fi
           sudo bash "$SCRIPT" \
