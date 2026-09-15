@@ -1,6 +1,12 @@
 # Deploy (create or update) a Python (Uvicorn/FastAPI) project on EC2 AI Research.
-# Runner: ciatec-ai-prod (labels: self-hosted, Linux, X64, ai-research).
+# Runner: GitHub-hosted (ubuntu-latest) → SSH into EC2.
 #
+# Required secrets (org or caller repo):
+#   EC2_AI_RESEARCH_HOST — IP or hostname of EC2 AI Research
+#   EC2_AI_RESEARCH_KEY  — private SSH key (PEM)
+#   EC2_AI_RESEARCH_USER — SSH user (e.g. ubuntu)
+#
+# Remote script: /home/ubuntu/new-ai-project.sh
 # Create: clones /opt/ciatec-ai/<project_name>, systemd unit, Nginx vhost.
 # Update: git pull + recreate unit/Nginx + restart.
 #
@@ -45,11 +51,18 @@ on:
         required: false
         type: number
         default: 5
+    secrets:
+      EC2_AI_RESEARCH_HOST:
+        required: true
+      EC2_AI_RESEARCH_KEY:
+        required: true
+      EC2_AI_RESEARCH_USER:
+        required: true
 
 jobs:
   deploy:
     name: Deploy ${{ inputs.project_name }}
-    runs-on: [self-hosted, Linux, X64, ai-research]
+    runs-on: ubuntu-latest
     environment: ${{ inputs.environment || 'production' }}
 
     steps:
@@ -65,57 +78,81 @@ jobs:
           echo "value=${REPO}" >> "$GITHUB_OUTPUT"
           echo "Using GitHub repo: ${REPO}"
 
-      # Composite action from this private repo (same access as reusable workflows).
-      # Avoids actions/checkout of ciatec-devops — caller GITHUB_TOKEN cannot clone it.
       - name: Deploy or update project
-        uses: ciatec-org/ciatec-devops/.github/actions/new-ai-project@main
+        uses: appleboy/ssh-action@v1.2.0
         with:
-          project_name: ${{ inputs.project_name }}
-          port: ${{ inputs.port }}
-          github_repo: ${{ steps.repo.outputs.value }}
+          host: ${{ secrets.EC2_AI_RESEARCH_HOST }}
+          username: ${{ secrets.EC2_AI_RESEARCH_USER }}
+          key: ${{ secrets.EC2_AI_RESEARCH_KEY }}
+          script: |
+            set -euo pipefail
+            SCRIPT="/home/ubuntu/new-ai-project.sh"
+            if [ ! -f "$SCRIPT" ]; then
+              echo "::error::Script not found: $SCRIPT"
+              exit 1
+            fi
+            sudo bash "$SCRIPT" \
+              "${{ inputs.project_name }}" \
+              "${{ inputs.port }}" \
+              "${{ steps.repo.outputs.value }}"
 
       - name: Verify systemd service is active
-        run: |
-          set -euo pipefail
-          SERVICE="${{ inputs.project_name }}"
-          echo "Checking systemd: ${SERVICE}"
-          sudo systemctl is-active --quiet "${SERVICE}"
-          sudo systemctl status "${SERVICE}" --no-pager
-          echo "Systemd service ${SERVICE} is active"
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_AI_RESEARCH_HOST }}
+          username: ${{ secrets.EC2_AI_RESEARCH_USER }}
+          key: ${{ secrets.EC2_AI_RESEARCH_KEY }}
+          script: |
+            set -euo pipefail
+            SERVICE="${{ inputs.project_name }}"
+            echo "Checking systemd: ${SERVICE}"
+            sudo systemctl is-active --quiet "${SERVICE}"
+            sudo systemctl status "${SERVICE}" --no-pager
+            echo "Systemd service ${SERVICE} is active"
 
       - name: Health check
-        run: |
-          set -euo pipefail
-          URL="http://127.0.0.1:${{ inputs.port }}/health"
-          ATTEMPTS="${{ inputs.health_attempts || 12 }}"
-          INTERVAL="${{ inputs.health_interval_seconds || 5 }}"
-          echo "Waiting for HTTP 200: $URL (attempts=$ATTEMPTS interval=${INTERVAL}s)"
-          i=1
-          while [ "$i" -le "$ATTEMPTS" ]; do
-            HTTP_CODE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "$URL" || true)"
-            if [ "$HTTP_CODE" = "200" ]; then
-              echo "Health OK (HTTP 200) on attempt $i"
-              exit 0
-            fi
-            echo "Attempt $i/$ATTEMPTS failed (HTTP ${HTTP_CODE:-none}); sleeping ${INTERVAL}s..."
-            sleep "$INTERVAL"
-            i=$((i + 1))
-          done
-          echo "::error::Health check failed for $URL (expected HTTP 200)"
-          echo "---- systemd status ----"
-          sudo systemctl status "${{ inputs.project_name }}" --no-pager || true
-          echo "---- last 50 log lines ----"
-          sudo journalctl -u "${{ inputs.project_name }}" -n 50 --no-pager || true
-          exit 1
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_AI_RESEARCH_HOST }}
+          username: ${{ secrets.EC2_AI_RESEARCH_USER }}
+          key: ${{ secrets.EC2_AI_RESEARCH_KEY }}
+          script: |
+            set -euo pipefail
+            URL="http://127.0.0.1:${{ inputs.port }}/health"
+            ATTEMPTS="${{ inputs.health_attempts || 12 }}"
+            INTERVAL="${{ inputs.health_interval_seconds || 5 }}"
+            echo "Waiting for HTTP 200: $URL (attempts=$ATTEMPTS interval=${INTERVAL}s)"
+            i=1
+            while [ "$i" -le "$ATTEMPTS" ]; do
+              HTTP_CODE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "$URL" || true)"
+              if [ "$HTTP_CODE" = "200" ]; then
+                echo "Health OK (HTTP 200) on attempt $i"
+                exit 0
+              fi
+              echo "Attempt $i/$ATTEMPTS failed (HTTP ${HTTP_CODE:-none}); sleeping ${INTERVAL}s..."
+              sleep "$INTERVAL"
+              i=$((i + 1))
+            done
+            echo "::error::Health check failed for $URL (expected HTTP 200)"
+            echo "---- systemd status ----"
+            sudo systemctl status "${{ inputs.project_name }}" --no-pager || true
+            echo "---- last 50 log lines ----"
+            sudo journalctl -u "${{ inputs.project_name }}" -n 50 --no-pager || true
+            exit 1
 
       - name: Log deploy
         if: success()
-        run: |
-          set -euo pipefail
-          TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-          COMMIT_SHA="${GITHUB_SHA:-unknown}"
-          LOG_PATH="/var/log/ciatec/deploys.log"
-          sudo mkdir -p "$(dirname "$LOG_PATH")"
-          LOG_LINE="[${TIMESTAMP}] [${COMMIT_SHA}] deployed ${{ inputs.project_name }} → /opt/ciatec-ai/${{ inputs.project_name }} (port ${{ inputs.port }})"
-          echo "$LOG_LINE" | sudo tee -a "$LOG_PATH" >/dev/null
-          echo "$LOG_LINE"
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_AI_RESEARCH_HOST }}
+          username: ${{ secrets.EC2_AI_RESEARCH_USER }}
+          key: ${{ secrets.EC2_AI_RESEARCH_KEY }}
+          script: |
+            set -euo pipefail
+            TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+            COMMIT_SHA="${{ github.sha }}"
+            LOG_PATH="/var/log/ciatec/deploys.log"
+            sudo mkdir -p "$(dirname "$LOG_PATH")"
+            LOG_LINE="[${TIMESTAMP}] [${COMMIT_SHA}] deployed ${{ inputs.project_name }} → /opt/ciatec-ai/${{ inputs.project_name }} (port ${{ inputs.port }})"
+            echo "$LOG_LINE" | sudo tee -a "$LOG_PATH" >/dev/null
+            echo "$LOG_LINE"
