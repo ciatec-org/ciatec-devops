@@ -53,12 +53,6 @@ jobs:
     environment: ${{ inputs.environment || 'production' }}
 
     steps:
-      - name: Checkout ciatec-devops
-        uses: actions/checkout@v4
-        with:
-          repository: ciatec-org/ciatec-devops
-          ref: main
-
       - name: Resolve GitHub repo
         id: repo
         run: |
@@ -74,9 +68,10 @@ jobs:
       - name: Deploy or update project
         run: |
           set -euo pipefail
-          SCRIPT="scripts/setup/new-ai-project.sh"
+          # Script is installed on the EC2 host (not checked out from git).
+          SCRIPT="/home/ubuntu/ciatec-devops/scripts/setup/new-ai-project.sh"
           if [ ! -f "$SCRIPT" ]; then
-            echo "::error::Script not found: $SCRIPT"
+            echo "::error::Script not found on EC2: $SCRIPT"
             exit 1
           fi
           sudo bash "$SCRIPT" \
