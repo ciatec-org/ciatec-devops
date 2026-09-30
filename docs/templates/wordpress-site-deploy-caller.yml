@@ -4,6 +4,9 @@
 # Reusable workflow:
 #   ciatec-org/ciatec-devops/.github/workflows/deploy-wordpress-site.yml@main
 #
+# Deploy order: SITE first, NETWORK second (the network preflight requires
+# themes/<theme>/style.css to exist under site_dir).
+#
 # Only the theme folder is synced; the network stack bind-mounts it (site_dir must match
 # CIATEC_SITE_DIR of ciatec-wordpress-network; default there: /home/ubuntu/ciatec-wordpress).
 

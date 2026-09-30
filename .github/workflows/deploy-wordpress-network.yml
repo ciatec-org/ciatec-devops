@@ -89,8 +89,11 @@ jobs:
             echo "::error::Missing ${DEPLOY_PATH}/.env (copy it from the old stack folder, chmod 600)."
             exit 1
           fi
-          if [ ! -d "${CIATEC_SITE_DIR}/wordpress/wp-content/themes/ciatec" ]; then
-            echo "::error::Missing site tree at ${CIATEC_SITE_DIR}. Run the site deploy (deploy-wordpress-site) first."
+          # A file check, not a directory check: an empty folder would pass the bind mount
+          # and leave the theme missing.
+          THEME_STYLE="${CIATEC_SITE_DIR}/wordpress/wp-content/themes/ciatec/style.css"
+          if [ ! -f "${THEME_STYLE}" ]; then
+            echo "::error::Missing ${THEME_STYLE}. The site theme is not deployed: run the site deploy (deploy-wordpress-site) first, then this one."
             exit 1
           fi
 
