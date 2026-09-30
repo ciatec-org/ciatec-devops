@@ -20,6 +20,7 @@ Documento vivo: atualizar sempre que uma pasta ou ferramenta for adicionada.
 | `docs/repository-map.md` | Este mapa | Orientar contribuidores | Ativo |
 | `docs/runbooks/` | Procedimentos operacionais | Ops em produção | Ativo |
 | `docs/templates/` | Callers de workflow | Copiar para repos produto | Ativo |
+| `docs/runbooks/wordpress-multisite.md` | Deploy da rede WordPress multisite e dos sites | Aplicar/operar a rede | Ativo |
 | `runners/` | Docs dos self-hosted runners | Instalar/diagnosticar | Scaffold |
 | `monitoring/` | Observabilidade | Phase 4 | Placeholder |
 | `terraform/` | IaC | Phase 5 | Placeholder |

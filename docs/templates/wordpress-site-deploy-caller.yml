@@ -1,0 +1,32 @@
+# TEMPLATE — caller for a WordPress site repo (e.g. ciatec-wordpress).
+# Copy to .github/workflows/deploy.yml in that repo.
+#
+# Reusable workflow:
+#   ciatec-org/ciatec-devops/.github/workflows/deploy-wordpress-site.yml@main
+#
+# Only the theme folder is synced; the network stack bind-mounts it (site_dir must match
+# CIATEC_SITE_DIR of ciatec-wordpress-network; default there: /home/ubuntu/ciatec-wordpress).
+
+name: Deploy site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "wordpress/wp-content/themes/ciatec/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    permissions:
+      contents: read
+    uses: ciatec-org/ciatec-devops/.github/workflows/deploy-wordpress-site.yml@main
+    with:
+      runs_on: '["self-hosted","wordpress-network"]'   # replace with the real runner label
+      theme: ciatec
+      site_dir: /home/ubuntu/ciatec-wordpress
+      site_url: ciatec.org

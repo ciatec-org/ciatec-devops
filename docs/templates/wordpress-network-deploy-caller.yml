@@ -1,0 +1,32 @@
+# TEMPLATE — caller for the WordPress network repo (ciatec-wordpress-network).
+# Copy to .github/workflows/deploy.yml in that repo.
+#
+# Reusable workflow:
+#   ciatec-org/ciatec-devops/.github/workflows/deploy-wordpress-network.yml@main
+#
+# Every change here affects ALL sites of the network (the WordPress container is recreated).
+# First time: run the site deploy first (see wordpress-site-deploy-caller.yml).
+
+name: Deploy network
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docker-compose.yml"
+      - "docker-compose.override.yml"
+      - "mu-plugins/**"
+      - "plugins.txt"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    permissions:
+      contents: read
+    uses: ciatec-org/ciatec-devops/.github/workflows/deploy-wordpress-network.yml@main
+    with:
+      runs_on: '["self-hosted","wordpress-network"]'   # replace with the real runner label

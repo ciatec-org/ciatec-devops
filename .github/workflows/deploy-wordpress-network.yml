@@ -1,0 +1,164 @@
+# Reusable workflow: deploy the WordPress multisite network stack (ciatec-wordpress-network).
+# Called from the network repo on push to main. Runs on the self-hosted runner on the EC2.
+#
+# Flow: sync repo -> permanent deploy dir (keeps .env) -> preflight -> backup (db + files)
+#       -> compose pull/up -d -> health check -> wp-cli smoke.
+# The stack uses stock images (no build). Site themes are bind-mounted from site_dir,
+# which is populated by deploy-wordpress-site.yml (run the site deploy first).
+#
+# Auth: GITHUB_TOKEN (contents: read) only. No PAT, no SSH.
+# Never runs `down -v` or any prune. `.env` lives only on the host.
+
+name: Deploy WordPress network
+
+on:
+  workflow_call:
+    inputs:
+      runs_on:
+        description: "JSON array of self-hosted runner labels"
+        required: true
+        type: string
+      deploy_path:
+        description: "Permanent stack directory on the host (holds .env)"
+        required: false
+        type: string
+        default: /home/ubuntu/wordpress-multisite
+      site_dir:
+        description: "Host path of the ciatec.org site repo tree (exported as CIATEC_SITE_DIR)"
+        required: false
+        type: string
+        default: /home/ubuntu/ciatec-wordpress
+      backup_dir:
+        description: "Host directory for pre-deploy backups"
+        required: false
+        type: string
+        default: /home/ubuntu/backups/wordpress-multisite
+      backup_retention_days:
+        description: "Delete backups older than this many days"
+        required: false
+        type: number
+        default: 14
+      health_url:
+        description: "URL polled until healthy"
+        required: false
+        type: string
+        default: http://127.0.0.1:8082/wp-login.php
+      health_host:
+        description: "Host header sent with the health check (a network site domain)"
+        required: false
+        type: string
+        default: ciatec.org
+      health_attempts:
+        required: false
+        type: number
+        default: 12
+      health_interval_seconds:
+        required: false
+        type: number
+        default: 10
+
+concurrency:
+  group: deploy-wordpress-network
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy network stack
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    permissions:
+      contents: read
+    env:
+      DEPLOY_PATH: ${{ inputs.deploy_path }}
+      CIATEC_SITE_DIR: ${{ inputs.site_dir }}
+      BACKUP_DIR: ${{ inputs.backup_dir }}
+      RETENTION_DAYS: ${{ inputs.backup_retention_days }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Preflight host paths
+        run: |
+          set -euo pipefail
+          if [ ! -f "${DEPLOY_PATH}/.env" ]; then
+            echo "::error::Missing ${DEPLOY_PATH}/.env (copy it from the old stack folder, chmod 600)."
+            exit 1
+          fi
+          if [ ! -d "${CIATEC_SITE_DIR}/wordpress/wp-content/themes/ciatec" ]; then
+            echo "::error::Missing site tree at ${CIATEC_SITE_DIR}. Run the site deploy (deploy-wordpress-site) first."
+            exit 1
+          fi
+
+      - name: Backup database and files
+        working-directory: ${{ inputs.deploy_path }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${BACKUP_DIR}"
+          TS="$(date +%F-%H%M%S)"
+          if [ -n "$(docker compose ps -q db)" ]; then
+            docker compose exec -T db sh -c 'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction wordpress' \
+              | gzip > "${BACKUP_DIR}/db-${TS}.sql.gz"
+            test -s "${BACKUP_DIR}/db-${TS}.sql.gz"
+            docker run --rm -v wordpress-multisite_wp_data:/data:ro -v "${BACKUP_DIR}":/backup alpine \
+              tar czf "/backup/files-${TS}.tgz" -C /data .
+            echo "Backup OK: ${BACKUP_DIR} (${TS})"
+          else
+            echo "::warning::db container not running; backup skipped"
+          fi
+          find "${BACKUP_DIR}" -type f \( -name 'db-*.sql.gz' -o -name 'files-*.tgz' \) -mtime +"${RETENTION_DAYS}" -delete
+
+      - name: Sync repository to deploy path
+        run: |
+          set -euo pipefail
+          mkdir -p "${DEPLOY_PATH}"
+          rsync -a --delete \
+            --exclude '.env' \
+            --exclude '.git' \
+            --exclude '.github' \
+            ./ "${DEPLOY_PATH}/"
+
+      - name: Validate compose
+        working-directory: ${{ inputs.deploy_path }}
+        run: docker compose config -q
+
+      - name: Pull and start stack
+        working-directory: ${{ inputs.deploy_path }}
+        run: |
+          set -euo pipefail
+          docker compose pull
+          docker compose up -d
+          docker compose ps
+
+      - name: Health check
+        working-directory: ${{ inputs.deploy_path }}
+        env:
+          HEALTH_URL: ${{ inputs.health_url }}
+          HEALTH_HOST: ${{ inputs.health_host }}
+          ATTEMPTS: ${{ inputs.health_attempts }}
+          INTERVAL: ${{ inputs.health_interval_seconds }}
+        run: |
+          set -euo pipefail
+          i=1
+          while [ "$i" -le "$ATTEMPTS" ]; do
+            if curl -fsS --max-time 10 -o /dev/null \
+                 -H "Host: ${HEALTH_HOST}" -H "X-Forwarded-Proto: https" "${HEALTH_URL}"; then
+              echo "Health OK on attempt $i"
+              exit 0
+            fi
+            echo "Attempt $i/$ATTEMPTS failed; sleeping ${INTERVAL}s..."
+            sleep "$INTERVAL"
+            i=$((i + 1))
+          done
+          echo "::error::Health check failed for ${HEALTH_URL} (Host: ${HEALTH_HOST})"
+          docker compose ps || true
+          docker compose logs --tail=80 wordpress || true
+          exit 1
+
+      - name: Smoke (WP-CLI sees the network)
+        working-directory: ${{ inputs.deploy_path }}
+        env:
+          HEALTH_HOST: ${{ inputs.health_host }}
+        run: |
+          set -euo pipefail
+          docker compose run --rm wpcli wp core is-installed --network --url="${HEALTH_HOST}"
