@@ -28,15 +28,32 @@ O `.env` (`DB_PASSWORD`, `DB_ROOT_PASSWORD`) existe só no servidor, com `chmod 
 Risco: o `create_host_path: false` do compose nunca foi exercitado, então o primeiro `up` é o teste real. Não pule o backup nem a reversão.
 
 1. Backup manual do banco e dos arquivos (comandos em `ciatec-wordpress-network/docs/wordpress-multisite/deploy-e-backup.md`).
-2. Registrar o runner com um label próprio (por exemplo `wordpress-network`) na EC2, sem compartilhar com outros stacks.
+2. Registrar o runner `ciatec-wordpress` (usuário `ubuntu`) na EC2, no nível da organização, num grupo de runners restrito aos repositórios `ciatec-wordpress-network` e `ciatec-wordpress`. Não compartilhar com outros stacks.
 3. Fazer o deploy do **site** primeiro (Actions, `workflow_dispatch` no repo do site): cria `site_dir` com o tema.
 4. Confirmar que `/home/ubuntu/wordpress-multisite/.env` existe (copiado da pasta antiga, `chmod 600`). Sem ele o compose sobe com senhas vazias.
 5. Deploy da **rede** (`workflow_dispatch` no repo da rede). Só o WordPress é recriado, com alguns segundos fora do ar. Volumes intactos.
 6. Verificar: `docker compose ps`, `https://ciatec.org` e `docker compose run --rm wpcli wp theme list --url=ciatec.org` mostrando `ciatec`.
 7. Só depois, ativar o tema: `docker compose run --rm wpcli wp theme activate ciatec --url=ciatec.org`.
-8. Arquivar a pasta antiga do stack se ela for diferente da nova. Não manter dois compose para o mesmo projeto.
+
+`/home/ubuntu/wordpress-multisite` é a pasta atual do stack **e** o destino do deploy: não arquivar nem apagar. Só garanta que o `.env` dela continua lá.
 
 Reversão: restaurar o compose anterior na mesma pasta e `docker compose up -d` (mesmos volumes). Se o tema foi ativado, `wp theme activate twentytwentyfive --url=ciatec.org`. Restauração de banco e arquivos: mesmo documento do passo 1.
+
+## Segurança do runner
+
+Runner com acesso ao Docker equivale a root na EC2, que também hospeda DIIA, HINT e outros stacks.
+
+- Os callers disparam só em `push` para `main` e `workflow_dispatch`, nunca em `pull_request`.
+- Só repositórios privados com `main` protegido podem usar o runner (grupo restrito da organização).
+- Se o plano da organização permitir, usar um Environment `production` com aprovação obrigatória antes do deploy (não está configurado nos workflows).
+- Deploys são serializados por `concurrency`.
+
+## Cuidados no primeiro deploy
+
+- Fazer o backup manual antes: o backup do workflow ainda não foi testado num servidor real.
+- O primeiro deploy é um `workflow_dispatch` supervisionado.
+- Disco: a EC2 tem cerca de 12 GB livres. Acompanhar o tamanho de `/home/ubuntu/backups/wordpress-multisite` nos primeiros dias (retenção de 14 dias).
+- O `rsync --delete` da rede preserva `.env` e `backups/`, e o workflow recusa um `backup_dir` dentro de `deploy_path`.
 
 ## Regras
 

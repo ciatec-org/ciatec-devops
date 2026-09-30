@@ -17,8 +17,17 @@ on:
       - ".github/workflows/deploy.yml"
   workflow_dispatch:
 
+# Triggers: only push to main and manual dispatch. NEVER pull_request: the runner has
+# Docker access on a host shared with other stacks (equivalent to root).
+# Keep this repo private with a protected main.
+
 permissions:
   contents: read
+
+# The reusable workflow also serializes deploys (group deploy-wordpress-site-<theme>).
+concurrency:
+  group: caller-deploy-wordpress-site
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -26,7 +35,7 @@ jobs:
       contents: read
     uses: ciatec-org/ciatec-devops/.github/workflows/deploy-wordpress-site.yml@main
     with:
-      runs_on: '["self-hosted","wordpress-network"]'   # replace with the real runner label
+      runs_on: '["self-hosted","ciatec-wordpress"]'
       theme: ciatec
       site_dir: /home/ubuntu/ciatec-wordpress
       site_url: ciatec.org

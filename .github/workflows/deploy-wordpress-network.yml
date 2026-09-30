@@ -81,6 +81,10 @@ jobs:
       - name: Preflight host paths
         run: |
           set -euo pipefail
+          # rsync --delete runs on DEPLOY_PATH: backups inside it would be wiped.
+          case "$(realpath -m "${BACKUP_DIR}")/" in
+            "$(realpath -m "${DEPLOY_PATH}")"/*) echo "::error::backup_dir must be outside deploy_path"; exit 1 ;;
+          esac
           if [ ! -f "${DEPLOY_PATH}/.env" ]; then
             echo "::error::Missing ${DEPLOY_PATH}/.env (copy it from the old stack folder, chmod 600)."
             exit 1
@@ -114,6 +118,7 @@ jobs:
           mkdir -p "${DEPLOY_PATH}"
           rsync -a --delete \
             --exclude '.env' \
+            --exclude 'backups/' \
             --exclude '.git' \
             --exclude '.github' \
             ./ "${DEPLOY_PATH}/"
