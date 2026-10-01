@@ -7,6 +7,8 @@ Reusable workflows to **update CIATec EC2 hosts**. Product repos call these file
 | `build-push-ghcr.yml` | GitHub-hosted | Build Docker image + push to GHCR (`:main`, `:sha-*`) — prepares the image for deploy |
 | `deploy-compose.yml` | Self-hosted | Permanent clone: `git pull` + `compose pull/up` + health |
 | `deploy-compose-checkout.yml` | Self-hosted | No permanent clone: `actions/checkout` + `compose pull/up` + health |
+| `deploy-wordpress-network.yml` | Self-hosted (WordPress EC2) | Rede WordPress multisite: backup + `compose pull/up -d` + health + smoke (imagens oficiais, sem build) |
+| `deploy-wordpress-site.yml` | Self-hosted (WordPress EC2) | Sincroniza o tema de um site para o diretório que a rede monta por bind mount |
 | `deploy-webgl.yml` | Self-hosted (Games) | Sync Unity WebGL → Nginx path on Games EC2 |
 | `deploy-ai-project.yml` | Self-hosted (AI Research) | Create or update a Python project (clone, systemd, Nginx, health) |
 | `deploy-docker.yml` | GitHub-hosted + SSH | Legacy: SSH + scripts under `/opt/ciatec` |

@@ -14,6 +14,7 @@ chamam workflows daqui ao fazer push em `main`, e a produção na EC2 é atualiz
 | **Jogos WebGL** | Caller no repo do jogo → `deploy-webgl.yml` → self-hosted runner na EC2 Games → Nginx |
 | **API + App (clone no host)** | Caller no `ciatec-core` → `build-push-ghcr.yml` + `deploy-compose.yml` → GHCR → `git pull` + compose |
 | **API (só secrets no host)** | Caller (ex. `ciatec-ht`) → `build-push-ghcr.yml` + `deploy-compose-checkout.yml` → GHCR → checkout + compose |
+| **Rede WordPress multisite** | Caller na `ciatec-wordpress-network` → `deploy-wordpress-network.yml`; caller em cada repo de site → `deploy-wordpress-site.yml`. Ver [docs/runbooks/wordpress-multisite.md](docs/runbooks/wordpress-multisite.md) |
 
 ---
 

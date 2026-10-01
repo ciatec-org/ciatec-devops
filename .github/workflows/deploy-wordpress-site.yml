@@ -1,0 +1,107 @@
+# Reusable workflow: deploy one WordPress site's own code (theme) to the EC2.
+# Called from a site repo (e.g. ciatec-wordpress) on push to main.
+#
+# It only syncs wordpress/wp-content/themes/<theme>/ into <site_dir>, the host tree that the
+# network stack bind-mounts (see ciatec-wordpress-network docker-compose.yml). rsync updates
+# the directory in place, so the running container sees the change without a restart.
+# It never touches other sites' folders, plugins from the panel, uploads, or the database.
+#
+# First deploy order: site deploy -> network deploy (the network preflight needs site_dir).
+# Auth: GITHUB_TOKEN (contents: read) only.
+
+name: Deploy WordPress site
+
+on:
+  workflow_call:
+    inputs:
+      runner_label:
+        description: "Label of this repo's self-hosted runner (set by the caller)"
+        required: true
+        type: string
+      theme:
+        description: "Theme slug (folder under wordpress/wp-content/themes/)"
+        required: true
+        type: string
+      site_dir:
+        description: "Host path that mirrors the site repo (must match CIATEC_SITE_DIR of the network stack)"
+        required: true
+        type: string
+      network_dir:
+        description: "Network stack directory on the host, used for the optional cache flush"
+        required: false
+        type: string
+        default: /home/ubuntu/wordpress-multisite
+      site_url:
+        description: "Site domain for wp cache flush (--url). Empty skips the flush"
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: deploy-wordpress-site-${{ inputs.theme }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy theme ${{ inputs.theme }}
+    runs-on: [self-hosted, "${{ inputs.runner_label }}"]
+    permissions:
+      contents: read
+    env:
+      THEME: ${{ inputs.theme }}
+      SITE_DIR: ${{ inputs.site_dir }}
+    steps:
+      - name: Acquire host deploy lock
+        id: lock
+        run: |
+          set -euo pipefail
+          # GitHub concurrency groups are per repository, so site and network deploys
+          # (different repos, different runners, same host) are serialized with a host lock.
+          LOCK=/tmp/wordpress-deploy.lock
+          for _ in $(seq 1 180); do
+            if mkdir "$LOCK" 2>/dev/null; then echo "${GITHUB_REPOSITORY} ${GITHUB_RUN_ID}" > "$LOCK/owner"; echo "acquired=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+            # stale lock (runner died): older than 60 min
+            if [ -n "$(find "$LOCK" -maxdepth 0 -mmin +60 2>/dev/null)" ]; then rm -rf "$LOCK"; continue; fi
+            echo "Another WordPress deploy holds the lock ($(cat "$LOCK/owner" 2>/dev/null)); waiting..."
+            sleep 10
+          done
+          echo "::error::Timed out waiting for the host deploy lock"; exit 1
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Validate theme
+        run: |
+          set -euo pipefail
+          case "${THEME}" in
+            ''|*/*|*..*) echo "::error::Invalid theme slug: ${THEME}"; exit 1 ;;
+          esac
+          test -f "wordpress/wp-content/themes/${THEME}/style.css" \
+            || { echo "::error::wordpress/wp-content/themes/${THEME}/style.css not found"; exit 1; }
+          if command -v php >/dev/null 2>&1; then
+            find "wordpress/wp-content/themes/${THEME}" -name '*.php' -print0 | xargs -0 -n1 php -l >/dev/null
+          fi
+
+      - name: Sync theme
+        run: |
+          set -euo pipefail
+          DEST="${SITE_DIR}/wordpress/wp-content/themes/${THEME}"
+          mkdir -p "${DEST}"
+          rsync -a --delete --chmod=D755,F644 \
+            "wordpress/wp-content/themes/${THEME}/" "${DEST}/"
+          echo "Synced ${THEME} -> ${DEST}"
+
+      - name: Flush cache (best effort)
+        if: inputs.site_url != ''
+        working-directory: ${{ inputs.network_dir }}
+        env:
+          SITE_URL: ${{ inputs.site_url }}
+        run: |
+          docker compose run --rm wpcli wp cache flush --url="${SITE_URL}" \
+            || echo "::warning::cache flush skipped (stack not running?)"
+
+      - name: Release host deploy lock
+        if: always() && steps.lock.outputs.acquired == 'true'
+        run: rm -rf /tmp/wordpress-deploy.lock
