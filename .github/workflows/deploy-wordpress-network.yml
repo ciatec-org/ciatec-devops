@@ -48,6 +48,16 @@ on:
         required: false
         type: string
         default: ciatec.org
+      theme:
+        description: "Site theme slug to enable on the network and activate after the stack is up. Empty skips"
+        required: false
+        type: string
+        default: ciatec
+      theme_site_url:
+        description: "Site domain where the theme is activated (--url)"
+        required: false
+        type: string
+        default: ciatec.org
       health_attempts:
         required: false
         type: number
@@ -186,6 +196,37 @@ jobs:
         run: |
           set -euo pipefail
           docker compose run --rm wpcli wp core is-installed --network --url="${HEALTH_HOST}"
+
+      - name: Enable and activate site theme (idempotent)
+        if: inputs.theme != ''
+        working-directory: ${{ inputs.deploy_path }}
+        env:
+          THEME: ${{ inputs.theme }}
+          THEME_URL: ${{ inputs.theme_site_url }}
+        run: |
+          set -euo pipefail
+          wp() { docker compose run --rm -T wpcli wp "$@" --url="${THEME_URL}" </dev/null; }
+          # The bind mount must expose the theme inside the container.
+          if ! wp theme is-installed "${THEME}"; then
+            echo "::error::Theme ${THEME} not visible inside the wpcli container (bind mount or CIATEC_SITE_DIR)."
+            exit 1
+          fi
+          # parent_theme is a display name; the slug is the Template: line of style.css.
+          STYLE="${CIATEC_SITE_DIR}/wordpress/wp-content/themes/${THEME}/style.css"
+          PARENT="$(sed -n 's/^Template:[[:space:]]*//p' "${STYLE}" | tr -d '\r' | head -1)"
+          if [ -n "${PARENT}" ]; then
+            if ! wp theme is-installed "${PARENT}"; then
+              echo "::error::Parent theme ${PARENT} is not installed on the network."
+              exit 1
+            fi
+            wp theme enable "${PARENT}" --network
+          fi
+          wp theme enable "${THEME}" --network
+          if [ "$(wp theme list --status=active --field=name | grep -cx "${THEME}" || true)" = "0" ]; then
+            wp theme activate "${THEME}"
+          else
+            echo "Theme ${THEME} already active on ${THEME_URL}"
+          fi
 
       - name: Release host deploy lock
         if: always() && steps.lock.outputs.acquired == 'true'
