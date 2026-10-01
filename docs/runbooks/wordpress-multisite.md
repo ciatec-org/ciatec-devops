@@ -28,7 +28,7 @@ O `.env` (`DB_PASSWORD`, `DB_ROOT_PASSWORD`) existe só no servidor, com `chmod 
 Risco: o `create_host_path: false` do compose nunca foi exercitado, então o primeiro `up` é o teste real. Não pule o backup nem a reversão.
 
 1. Backup manual do banco e dos arquivos (comandos em `ciatec-wordpress-network/docs/wordpress-multisite/deploy-e-backup.md`).
-2. Registrar o runner `ciatec-wordpress` (usuário `ubuntu`) na EC2, no nível da organização, num grupo de runners restrito aos repositórios `ciatec-wordpress-network` e `ciatec-wordpress`. Não compartilhar com outros stacks.
+2. Registrar o runner `ciatec-wordpress-production` (site) e `ciatec-wordpress-network-production` (rede), usuário `ubuntu` na EC2, no nível da organização, num grupo de runners restrito aos repositórios `ciatec-wordpress-network` e `ciatec-wordpress`. Não compartilhar com outros stacks.
 3. Fazer o deploy do **site** primeiro (Actions, `workflow_dispatch` no repo do site): cria `site_dir` com o tema.
 4. Confirmar que `/home/ubuntu/wordpress-multisite/.env` existe (copiado da pasta antiga, `chmod 600`). Sem ele o compose sobe com senhas vazias.
 5. Deploy da **rede** (`workflow_dispatch` no repo da rede). Só o WordPress é recriado, com alguns segundos fora do ar. Volumes intactos.
@@ -46,7 +46,7 @@ Runner com acesso ao Docker equivale a root na EC2, que também hospeda DIIA, HI
 - Os callers disparam só em `push` para `main` e `workflow_dispatch`, nunca em `pull_request`.
 - Só repositórios privados com `main` protegido podem usar o runner (grupo restrito da organização).
 - Se o plano da organização permitir, usar um Environment `production` com aprovação obrigatória antes do deploy (não está configurado nos workflows).
-- Deploys são serializados por `concurrency`.
+- Deploys são serializados por `concurrency` (por repositório) e por um lock no host (`/tmp/wordpress-deploy.lock`) que impede site e rede de rodarem juntos, mesmo com dois runners. Se um runner morrer com o lock, ele expira em 60 min.
 
 ## Cuidados no primeiro deploy
 

@@ -27,9 +27,10 @@ on:
 permissions:
   contents: read
 
-# The reusable workflow also serializes deploys (group deploy-wordpress-network).
+# Serializes deploys of this repo. Concurrency groups are per repository, so site x network
+# ordering is enforced by the host lock inside the reusable workflows (/tmp/wordpress-deploy.lock).
 concurrency:
-  group: caller-deploy-wordpress-network
+  group: wordpress-deploy
   cancel-in-progress: false
 
 jobs:
@@ -38,4 +39,4 @@ jobs:
       contents: read
     uses: ciatec-org/ciatec-devops/.github/workflows/deploy-wordpress-network.yml@main
     with:
-      runs_on: '["self-hosted","ciatec-wordpress"]'
+      runner_label: ciatec-wordpress-network-production
