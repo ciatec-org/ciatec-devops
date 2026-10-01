@@ -28,7 +28,7 @@ permissions:
   contents: read
 
 # Serializes deploys of this repo. Concurrency groups are per repository, so site x network
-# ordering is enforced by the host lock inside the reusable workflows (/tmp/wordpress-deploy.lock).
+# ordering is enforced by the host lock inside the reusable workflows (/home/ubuntu/.locks/wordpress-deploy.lock).
 concurrency:
   group: wordpress-deploy
   cancel-in-progress: false

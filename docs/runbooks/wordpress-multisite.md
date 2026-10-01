@@ -46,7 +46,7 @@ Runner com acesso ao Docker equivale a root na EC2, que também hospeda DIIA, HI
 - Os callers disparam só em `push` para `main` e `workflow_dispatch`, nunca em `pull_request`.
 - Só repositórios privados com `main` protegido podem usar o runner (grupo restrito da organização).
 - Se o plano da organização permitir, usar um Environment `production` com aprovação obrigatória antes do deploy (não está configurado nos workflows).
-- Deploys são serializados por `concurrency` (por repositório) e por um lock no host (`/tmp/wordpress-deploy.lock`) que impede site e rede de rodarem juntos, mesmo com dois runners. Se um runner morrer com o lock, ele expira em 60 min.
+- Deploys são serializados por `concurrency` (por repositório) e por um lock no host (`/home/ubuntu/.locks/wordpress-deploy.lock`) que impede site e rede de rodarem juntos, mesmo com dois runners. Se um runner morrer com o lock, ele expira em 60 min.
 
 ## Cuidados no primeiro deploy
 

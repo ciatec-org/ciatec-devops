@@ -57,7 +57,9 @@ jobs:
           set -euo pipefail
           # GitHub concurrency groups are per repository, so site and network deploys
           # (different repos, different runners, same host) are serialized with a host lock.
-          LOCK=/tmp/wordpress-deploy.lock
+          LOCK_DIR=/home/ubuntu/.locks
+          LOCK="${LOCK_DIR}/wordpress-deploy.lock"
+          mkdir -p "${LOCK_DIR}"
           for _ in $(seq 1 180); do
             if mkdir "$LOCK" 2>/dev/null; then echo "${GITHUB_REPOSITORY} ${GITHUB_RUN_ID}" > "$LOCK/owner"; echo "acquired=true" >> "$GITHUB_OUTPUT"; exit 0; fi
             # stale lock (runner died): older than 60 min
@@ -68,7 +70,7 @@ jobs:
           echo "::error::Timed out waiting for the host deploy lock"; exit 1
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 1
 
@@ -104,4 +106,4 @@ jobs:
 
       - name: Release host deploy lock
         if: always() && steps.lock.outputs.acquired == 'true'
-        run: rm -rf /tmp/wordpress-deploy.lock
+        run: rm -rf /home/ubuntu/.locks/wordpress-deploy.lock
