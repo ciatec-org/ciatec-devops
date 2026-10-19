@@ -2,7 +2,7 @@
 
 Deploy da rede `ciatec-wordpress-network` e dos sites (um repositório por site) na EC2 institucional (`3.150.28.236`, Nginx no host, stack em `127.0.0.1:8082`).
 
-**Estado: em produção desde 01/10/2026.** O `ciatec.org` roda o tema `ciatec` sobre o `hello-elementor`, publicado por estes workflows.
+**Estado: em produção desde 01/10/2026.** O `ciatec.org` roda o tema `ciatec` sobre o `hello-elementor`, publicado por estes workflows. Em migração: o site `hint.ciatec.org` (tema `hint`, repositório `hint-wordpress`), vindo do stack standalone `hintconference`.
 
 Definição da rede (compose, `mu-plugins`, `plugins.txt`, docs): repositório `ciatec-wordpress-network`. Tudo que executa no servidor: este repositório.
 
@@ -20,6 +20,7 @@ Callers prontos em `docs/templates/wordpress-*-deploy-caller.yml`.
 ```
 /home/ubuntu/wordpress-multisite/   stack da rede (compose, .env só aqui, mu-plugins)
 /home/ubuntu/ciatec-wordpress/      árvore do site ciatec.org (só o tema é sincronizado)
+/home/ubuntu/hint-wordpress/        árvore do site hint.ciatec.org (só o tema é sincronizado)
 /home/ubuntu/backups/wordpress-multisite/   backups pré-deploy (retenção 14 dias)
 /home/ubuntu/.locks/                lock de deploy (site e rede nunca rodam juntos)
 ```
@@ -31,7 +32,7 @@ O `.env` (`DB_PASSWORD`, `DB_ROOT_PASSWORD`) existe só no servidor, com `chmod 
 Feito em 01/10/2026, com um humano acompanhando. Os passos valem para um site novo ou para reconstruir a rede:
 
 1. Backup manual do banco e dos arquivos (comandos em `ciatec-wordpress-network/docs/wordpress-multisite/deploy-e-backup.md`).
-2. Runners registrados no nível da organização, num grupo restrito aos repositórios da rede e do site, usuário `ubuntu`. **O label precisa existir de fato**: o `runs-on` casa com labels, não com o nome do runner. Labels em uso: `ciatec-wordpress-production` (site) e `ciatec-wordpress-network-production` (rede).
+2. Runner registrado, usuário `ubuntu`. **O label precisa existir de fato**: o `runs-on` casa com labels, não com o nome do runner. Labels em uso: `ciatec-wordpress-production` (site ciatec.org) e `ciatec-wordpress-network-production` (rede), registrados no nível da organização num grupo restrito aos repositórios da rede e do site. Exceção: `hint-wordpress-production` (site hint.ciatec.org) está registrado **no próprio repositório** `hint-wordpress`, não no grupo da organização — mesma EC2 e mesmo usuário `ubuntu`, só o nível de registro muda.
 3. `.env` em `/home/ubuntu/wordpress-multisite` (`chmod 600`). Sem ele o compose sobe com senhas vazias.
 4. Deploy do **site** primeiro: cria `site_dir` com o tema. O preflight da rede exige `themes/ciatec/style.css` lá.
 5. Deploy da **rede**: recria só o WordPress (alguns segundos fora do ar, **para todos os sites**), volumes intactos, e habilita e ativa o tema no fim.
@@ -46,7 +47,7 @@ Reversão: restaurar o compose anterior na mesma pasta e `docker compose up -d` 
 Runner com acesso ao Docker equivale a root na EC2, que também hospeda DIIA, HINT e outros stacks.
 
 - Os callers disparam só em `push` para `main` e `workflow_dispatch`, nunca em `pull_request`.
-- Só repositórios privados com `main` protegido podem usar o runner (grupo restrito da organização).
+- Só repositórios privados com `main` protegido podem usar o runner (grupo restrito da organização, ou, no caso do `hint-wordpress`, o runner de repositório próprio).
 - Se o plano da organização permitir, usar um Environment `production` com aprovação obrigatória antes do deploy (não está configurado nos workflows).
 - Deploys são serializados por `concurrency` (por repositório) e por um lock no host (`/home/ubuntu/.locks/wordpress-deploy.lock`) que impede site e rede de rodarem juntos, mesmo com dois runners. Se um runner morrer com o lock, ele expira em 60 min.
 
