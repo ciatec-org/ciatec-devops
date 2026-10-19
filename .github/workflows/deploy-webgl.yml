@@ -31,7 +31,7 @@ on:
 jobs:
   deploy:
     name: Deploy ${{ inputs.game_name }}
-    runs-on: self-hosted
+    runs-on: [self-hosted, ciatec-games-prod]
     environment: ${{ inputs.environment }}
     steps:
       - name: Checkout calling repository
