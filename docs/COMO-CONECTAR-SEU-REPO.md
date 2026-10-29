@@ -126,6 +126,30 @@ Nenhum secret de organização obrigatório (`GITHUB_TOKEN` apenas).
 
 ---
 
+## D) Serviço Node.js com WebSocket (ex. NeverDice)
+
+### O que o devops faz
+
+1. **GitHub-hosted:** `npm ci` + testes + build, empacota só o que vai rodar
+2. **Self-hosted na EC2 Games:** instala dependências de produção, faz backup, copia para `/opt/<service>`, instala a unit systemd do repo, reinicia, confere health HTTP e WebSocket. Em falha, volta a versão anterior.
+
+### Passo a passo
+
+1. Na EC2: Node instalado, DNS do subdomínio e vhost Nginx a partir de [`docs/templates/nginx-node-websocket.conf`](templates/nginx-node-websocket.conf) + certbot
+2. No repo: `deploy/<service>.service` e rota `GET /health`
+3. Caller: [`docs/templates/node-service-deploy-caller.yml`](templates/node-service-deploy-caller.yml) com `service_name`, `port`, `ws_path`
+4. Registrar a porta em [architecture.md](architecture.md#portas-locais-na-ec2-games)
+
+### Secrets
+
+Opcional: `DEPLOY_LOG_PATH` (`secrets: inherit`).
+
+### Runbook completo
+
+[add-node-service.md](runbooks/add-node-service.md)
+
+---
+
 ## Checklist rápido
 
 **Jogo WebGL**
@@ -135,6 +159,16 @@ Nenhum secret de organização obrigatório (`GITHUB_TOKEN` apenas).
 - [ ] `.github/workflows/deploy.yml` no repo do jogo
 - [ ] `game_name` e `deploy_path` corretos
 - [ ] `Build/` na raiz
+- [ ] Acesso cross-repo Actions liberado
+
+**Serviço Node + WebSocket**
+
+- [ ] Node do sistema na EC2 Games atendendo o `engines` do `package.json`
+- [ ] `.nvmrc` no repo com a versão do build
+- [ ] DNS + vhost Nginx com `Upgrade`/`Connection` no caminho do WebSocket + certbot
+- [ ] Porta livre e registrada em `architecture.md`
+- [ ] `deploy/<service>.service` e `GET /health` no repo
+- [ ] Runner `ciatec-games-prod` liberado para o repo (runner group)
 - [ ] Acesso cross-repo Actions liberado
 
 **Monorepo**

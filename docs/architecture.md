@@ -62,6 +62,21 @@ Caminhos de deploy (padrão; ajustar conforme servidor real):
 | Bubbles | `ciatec-bubbles` | `/var/www/bubbles` |
 | Downhill | `ciatec-downhill` | `/var/www/downhill` |
 
+Serviços Node.js (processo systemd em `127.0.0.1`, Nginx na frente):
+
+| Serviço | Repositório | Deploy path | URL |
+|---------|-------------|-------------|-----|
+| NeverDice | `ciatec-game-neverdice` | `/opt/neverdice` | `neverdice.game.ciatec.org` |
+
+#### Portas locais na EC2 Games
+
+Registrar aqui antes de escolher a porta de um serviço novo.
+
+| Porta | Serviço | Deploy |
+|-------|---------|--------|
+| 8787 | coinup | Manual (fora deste repo) |
+| 8790 | neverdice | `deploy-node-service.yml` |
+
 ### EC2 API/App
 
 | Item | Valor |
@@ -84,6 +99,7 @@ Caminhos de deploy (padrão; ajustar conforme servidor real):
 | TrunkTilt | EC2 Games | 80/443 | HTTP(S) | Jogo WebGL |
 | Bubbles | EC2 Games | 80/443 | HTTP(S) | Jogo WebGL |
 | Downhill | EC2 Games | 80/443 | HTTP(S) | Jogo WebGL |
+| NeverDice | EC2 Games | 8790 (interno) / 443 | HTTP(S) + WebSocket (`/ws`) | Jogo multiplayer (salas em memória) |
 | ciatec-api | EC2 API/App | 8000 (interno) / 443 (`api.ciatec.org`) | HTTP(S) | API + `/health` |
 | ciatec-app | EC2 API/App | 8081 (interno) / 443 (`research.ciatec.org`) | HTTP(S) | UI |
 | PostgreSQL | RDS | 5432 | TCP | Dados persistentes |
@@ -99,6 +115,17 @@ Caminhos de deploy (padrão; ajustar conforme servidor real):
 5. Ajusta permissões (`www-data`), `nginx -t`, `systemctl reload nginx`
 6. Registra log em `/var/log/ciatec/deploys.log`
 7. Em falha após backup: restaura `.bak`
+
+### Serviço Node.js com WebSocket (EC2 Games)
+
+1. Push em `main` no repositório do serviço
+2. Caller invoca `ciatec-devops/.github/workflows/deploy-node-service.yml`
+3. **GitHub-hosted:** `npm ci` → testes → build → artifact (`dist/`, `server/`, `package*.json`, unit systemd)
+4. **Self-hosted (`ciatec-games-prod`):** `npm ci --omit=dev` → backup de `/opt/<service>` → `rsync` → instala a unit → `systemctl restart`
+5. Health HTTP em `127.0.0.1:<port>` e smoke de WebSocket
+6. Em falha: restaura arquivos e unit anteriores e reinicia. O Nginx (vhost + certbot) é configurado uma vez, à mão
+
+Runbook: [runbooks/add-node-service.md](runbooks/add-node-service.md).
 
 ### Docker — API + App (EC2 API/App) — fluxo actual
 
@@ -144,6 +171,7 @@ Caminhos de deploy (padrão; ajustar conforme servidor real):
 | `ciatec-trunktilt` | Jogo WebGL + caller de deploy |
 | `ciatec-bubbles` | Jogo WebGL + caller de deploy |
 | `ciatec-downhill` | Jogo WebGL + caller de deploy |
+| `ciatec-game-neverdice` | Jogo Node + WebSocket + caller de deploy |
 | `ciatec-core` | Monorepo API + App + callers GHCR / self-hosted |
 
 Runbook monorepo: [runbooks/deploy-monorepo.md](runbooks/deploy-monorepo.md).

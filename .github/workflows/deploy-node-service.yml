@@ -1,0 +1,458 @@
+# Reusable workflow: deploy a long-running Node.js service (HTTP and optional WebSocket)
+# behind Nginx on a self-hosted runner (default: EC2 Games).
+#
+# Job 1 (GitHub-hosted): Node from .nvmrc → npm ci → test → build → stage artifact_paths + systemd unit.
+# Job 2 (self-hosted):   npm ci --omit=dev (host Node must satisfy package.json "engines") → backup
+#                        /opt/<service> → rsync → install unit → restart → HTTP health → WebSocket smoke →
+#                        log. Restores the backup on failure.
+#
+# Nginx vhost and certbot are one-time manual setup (certbot edits the vhost; this workflow never
+# touches Nginx). Template: docs/templates/nginx-node-websocket.conf.
+#
+# Secrets (optional):
+#   DEPLOY_LOG_PATH — deploy log file (default: /var/log/ciatec/deploys.log)
+#
+# Called from product repos via workflow_call (see docs/templates/node-service-deploy-caller.yml).
+
+name: Deploy Node Service
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        description: "systemd unit name and default deploy dir (/opt/<service_name>), e.g. neverdice"
+        required: true
+        type: string
+      port:
+        description: "Local port the service listens on (127.0.0.1), unique per host"
+        required: true
+        type: number
+      health_path:
+        description: "HTTP path polled on 127.0.0.1:<port> until it answers 2xx"
+        required: false
+        type: string
+        default: /health
+      ws_path:
+        description: "WebSocket path for the post-deploy smoke test (empty = skip), e.g. /ws"
+        required: false
+        type: string
+        default: ""
+      ws_message:
+        description: "Text frame sent after the WebSocket opens (empty = only check the handshake)"
+        required: false
+        type: string
+        default: ""
+      ws_expect:
+        description: "Substring the first matching reply must contain (empty = any reply)"
+        required: false
+        type: string
+        default: ""
+      deploy_path:
+        description: "Absolute deploy dir on the host (default /opt/<service_name>)"
+        required: false
+        type: string
+        default: ""
+      unit_file:
+        description: "systemd unit in the repo (default deploy/<service_name>.service)"
+        required: false
+        type: string
+        default: ""
+      artifact_paths:
+        description: "Newline-separated paths (after build) copied to the host"
+        required: false
+        type: string
+        default: |
+          dist
+          server
+          package.json
+          package-lock.json
+      node_version:
+        description: "Node used to build (empty = .nvmrc / .node-version in the repo, else 22)"
+        required: false
+        type: string
+        default: ""
+      test_command:
+        description: "Test command on the GitHub-hosted runner (empty = skip)"
+        required: false
+        type: string
+        default: npm test
+      build_command:
+        description: "Build command on the GitHub-hosted runner (empty = skip)"
+        required: false
+        type: string
+        default: npm run build
+      runs_on:
+        description: "JSON array of self-hosted runner labels"
+        required: false
+        type: string
+        default: '["self-hosted", "ciatec-games-prod"]'
+      environment:
+        description: Target environment label
+        required: false
+        type: string
+        default: production
+      health_attempts:
+        description: Health check attempts
+        required: false
+        type: number
+        default: 12
+      health_interval_seconds:
+        description: Seconds between health attempts
+        required: false
+        type: number
+        default: 5
+      keep_backups:
+        description: "Backups of the deploy dir kept on the host"
+        required: false
+        type: number
+        default: 3
+    secrets:
+      DEPLOY_LOG_PATH:
+        required: false
+
+jobs:
+  build:
+    name: Build ${{ inputs.service_name }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      unit_file: ${{ steps.vars.outputs.unit_file }}
+      artifact_name: ${{ steps.vars.outputs.artifact_name }}
+      node_major: ${{ steps.node.outputs.major }}
+    steps:
+      - name: Checkout calling repository
+        uses: actions/checkout@v4
+
+      - name: Validate inputs
+        id: vars
+        env:
+          SERVICE_NAME: ${{ inputs.service_name }}
+          PORT: ${{ inputs.port }}
+          UNIT_FILE_INPUT: ${{ inputs.unit_file }}
+          DEPLOY_PATH_INPUT: ${{ inputs.deploy_path }}
+          KEEP_BACKUPS: ${{ inputs.keep_backups }}
+          NODE_VERSION_INPUT: ${{ inputs.node_version }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$SERVICE_NAME" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]]; then
+            echo "::error::service_name must match ^[a-z0-9][a-z0-9-]*$ (got '$SERVICE_NAME')"
+            exit 1
+          fi
+          if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [ "$PORT" -lt 1024 ] || [ "$PORT" -gt 65535 ]; then
+            echo "::error::port must be between 1024 and 65535 (got '$PORT')"
+            exit 1
+          fi
+          if ! [[ "$KEEP_BACKUPS" =~ ^[0-9]+$ ]]; then
+            echo "::error::keep_backups must be a non-negative integer (got '$KEEP_BACKUPS')"
+            exit 1
+          fi
+          if [ -n "$DEPLOY_PATH_INPUT" ] && ! [[ "$DEPLOY_PATH_INPUT" =~ ^/[A-Za-z0-9._-]+/[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::deploy_path must be absolute with at least two segments (got '$DEPLOY_PATH_INPUT')"
+            exit 1
+          fi
+          UNIT_FILE="${UNIT_FILE_INPUT:-deploy/${SERVICE_NAME}.service}"
+          if [ ! -f "$UNIT_FILE" ]; then
+            echo "::error::systemd unit not found in repository: $UNIT_FILE"
+            exit 1
+          fi
+          NODE_VERSION="$NODE_VERSION_INPUT"
+          NODE_VERSION_FILE=""
+          if [ -z "$NODE_VERSION" ]; then
+            for file in .nvmrc .node-version; do
+              if [ -f "$file" ]; then
+                NODE_VERSION_FILE="$file"
+                break
+              fi
+            done
+            [ -z "$NODE_VERSION_FILE" ] && NODE_VERSION="22"
+          fi
+          {
+            echo "unit_file=$UNIT_FILE"
+            echo "artifact_name=node-service-${SERVICE_NAME}"
+            echo "node_version=$NODE_VERSION"
+            echo "node_version_file=$NODE_VERSION_FILE"
+          } >> "$GITHUB_OUTPUT"
+          echo "✅ service=$SERVICE_NAME port=$PORT unit=$UNIT_FILE node=${NODE_VERSION:-from $NODE_VERSION_FILE}"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.vars.outputs.node_version }}
+          node-version-file: ${{ steps.vars.outputs.node_version_file }}
+          cache: npm
+
+      - name: Node version used to build
+        id: node
+        run: |
+          set -euo pipefail
+          echo "major=$(node -p 'process.versions.node.split(".")[0]')" >> "$GITHUB_OUTPUT"
+          echo "Building with node $(node -v), npm $(npm -v)"
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Test
+        if: inputs.test_command != ''
+        run: ${{ inputs.test_command }}
+
+      - name: Build
+        if: inputs.build_command != ''
+        run: ${{ inputs.build_command }}
+
+      - name: Stage release
+        env:
+          ARTIFACT_PATHS: ${{ inputs.artifact_paths }}
+          UNIT_FILE: ${{ steps.vars.outputs.unit_file }}
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/release"
+          mkdir -p "$RUNNER_TEMP/release"
+          while IFS= read -r path; do
+            path="${path%/}"
+            [ -z "$path" ] && continue
+            if [ ! -e "$path" ]; then
+              echo "::error::Artifact path not found after build: $path"
+              exit 1
+            fi
+            cp -a --parents "$path" "$RUNNER_TEMP/release/"
+            echo "staged: $path"
+          done <<< "$ARTIFACT_PATHS"
+          cp -a --parents "$UNIT_FILE" "$RUNNER_TEMP/release/"
+          if [ ! -f "$RUNNER_TEMP/release/package.json" ]; then
+            echo "::error::package.json must be listed in artifact_paths (production install runs on the host)"
+            exit 1
+          fi
+
+      - name: Upload release
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.vars.outputs.artifact_name }}
+          path: ${{ runner.temp }}/release
+          if-no-files-found: error
+          include-hidden-files: true
+          overwrite: true
+          retention-days: 7
+
+  deploy:
+    name: Deploy ${{ inputs.service_name }}
+    needs: build
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: deploy-node-service-${{ inputs.service_name }}
+      cancel-in-progress: false
+    env:
+      SERVICE_NAME: ${{ inputs.service_name }}
+      PORT: ${{ inputs.port }}
+      DEPLOY_PATH: ${{ inputs.deploy_path != '' && inputs.deploy_path || format('/opt/{0}', inputs.service_name) }}
+      UNIT_FILE: ${{ needs.build.outputs.unit_file }}
+      UNIT_PATH: /etc/systemd/system/${{ inputs.service_name }}.service
+      RELEASE_DIR: node-service-release
+      DEPLOY_LOG_PATH: ${{ secrets.DEPLOY_LOG_PATH }}
+    steps:
+      - name: Clean release dir
+        run: rm -rf "$RELEASE_DIR"
+
+      - name: Download release
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: ${{ env.RELEASE_DIR }}
+
+      - name: Preflight host
+        env:
+          BUILD_MAJOR: ${{ needs.build.outputs.node_major }}
+        run: |
+          set -euo pipefail
+          for cmd in node npm rsync curl systemctl; do
+            if ! command -v "$cmd" >/dev/null 2>&1; then
+              echo "::error::'$cmd' not found on the runner host"
+              exit 1
+            fi
+          done
+          HOST_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
+          if [ "$HOST_MAJOR" != "$BUILD_MAJOR" ]; then
+            echo "::warning::Host runs Node $HOST_MAJOR but the build used Node $BUILD_MAJOR (fine if package.json engines allow it)"
+          fi
+          if [ ! -f "$RELEASE_DIR/$UNIT_FILE" ]; then
+            echo "::error::Unit missing from release: $UNIT_FILE"
+            exit 1
+          fi
+          if ss -ltnH "sport = :$PORT" | grep -q . && ! systemctl is-active --quiet "$SERVICE_NAME"; then
+            echo "::error::Port $PORT is in use by another process (service $SERVICE_NAME is not active)"
+            sudo ss -ltnp "sport = :$PORT" || true
+            exit 1
+          fi
+          echo "✅ node $(node -v), deploy_path=$DEPLOY_PATH, unit=$UNIT_PATH"
+
+      # --engine-strict: a host Node outside package.json "engines" fails here, before production is touched.
+      - name: Install production dependencies
+        working-directory: ${{ env.RELEASE_DIR }}
+        run: |
+          set -euo pipefail
+          if [ -f package-lock.json ]; then
+            npm ci --omit=dev --engine-strict --no-audit --no-fund
+          else
+            npm install --omit=dev --engine-strict --no-audit --no-fund
+          fi
+
+      - name: Deploy and restart
+        run: |
+          set -euo pipefail
+          TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+          BACKUP_PATH="${DEPLOY_PATH}.bak.${TIMESTAMP}"
+          echo "DEPLOY_TIMESTAMP=$TIMESTAMP" >> "$GITHUB_ENV"
+
+          if [ -d "$DEPLOY_PATH" ]; then
+            echo "Backing up $DEPLOY_PATH → $BACKUP_PATH"
+            sudo cp -a "$DEPLOY_PATH" "$BACKUP_PATH"
+            echo "BACKUP_PATH=$BACKUP_PATH" >> "$GITHUB_ENV"
+          fi
+          if [ -f "$UNIT_PATH" ]; then
+            sudo cp -a "$UNIT_PATH" "${BACKUP_PATH}.service"
+            echo "UNIT_BACKUP=${BACKUP_PATH}.service" >> "$GITHUB_ENV"
+          fi
+          echo "DEPLOY_STARTED=1" >> "$GITHUB_ENV"
+
+          echo "Syncing release → $DEPLOY_PATH"
+          sudo mkdir -p "$DEPLOY_PATH"
+          sudo rsync -a --delete --chown=root:root --chmod=u+rwX,go+rX,go-w \
+            "$RELEASE_DIR/" "$DEPLOY_PATH/"
+
+          echo "Installing unit → $UNIT_PATH"
+          sudo install -m 0644 -o root -g root "$RELEASE_DIR/$UNIT_FILE" "$UNIT_PATH"
+          sudo systemctl daemon-reload
+          sudo systemctl enable "$SERVICE_NAME"
+          sudo systemctl restart "$SERVICE_NAME"
+
+      - name: Health check
+        env:
+          HEALTH_PATH: ${{ inputs.health_path }}
+          ATTEMPTS: ${{ inputs.health_attempts }}
+          INTERVAL: ${{ inputs.health_interval_seconds }}
+        run: |
+          set -euo pipefail
+          URL="http://127.0.0.1:${PORT}${HEALTH_PATH}"
+          echo "Waiting for 2xx: $URL (attempts=$ATTEMPTS interval=${INTERVAL}s)"
+          i=1
+          while [ "$i" -le "$ATTEMPTS" ]; do
+            if curl -fsS --max-time 5 -o /dev/null "$URL"; then
+              echo "✅ Health OK on attempt $i"
+              exit 0
+            fi
+            echo "Attempt $i/$ATTEMPTS failed; sleeping ${INTERVAL}s..."
+            sleep "$INTERVAL"
+            i=$((i + 1))
+          done
+          echo "::error::Health check failed for $URL"
+          exit 1
+
+      - name: WebSocket smoke
+        if: inputs.ws_path != ''
+        env:
+          WS_URL: ws://127.0.0.1:${{ inputs.port }}${{ inputs.ws_path }}
+          WS_MESSAGE: ${{ inputs.ws_message }}
+          WS_EXPECT: ${{ inputs.ws_expect }}
+        run: |
+          set -euo pipefail
+          SMOKE="$RUNNER_TEMP/ws-smoke.mjs"
+          cat > "$SMOKE" <<'EOF'
+          import { createRequire } from 'node:module';
+
+          const { WS_URL, WS_MESSAGE, WS_EXPECT, APP_DIR } = process.env;
+          // Node < 22 has no global WebSocket: fall back to the app's own `ws` dependency.
+          let WebSocketImpl = globalThis.WebSocket;
+          if (!WebSocketImpl) {
+            try {
+              WebSocketImpl = createRequire(`${APP_DIR}/package.json`)('ws');
+            } catch {
+              console.log('::error::No global WebSocket on this Node and no "ws" package in the app');
+              process.exit(1);
+            }
+          }
+
+          const finish = (code, line) => {
+            console.log(line);
+            process.exit(code);
+          };
+          const timer = setTimeout(() => finish(1, `::error::No WebSocket reply within 10s (${WS_URL})`), 10_000);
+          const socket = new WebSocketImpl(WS_URL);
+          socket.onerror = (event) => finish(1, `::error::WebSocket error on ${WS_URL}: ${event?.message || 'connection failed'}`);
+          socket.onclose = (event) => finish(1, `::error::WebSocket closed before the expected reply (code ${event?.code})`);
+          socket.onopen = () => {
+            if (!WS_MESSAGE) return finish(0, `✅ WebSocket handshake OK (${WS_URL})`);
+            socket.send(WS_MESSAGE);
+          };
+          socket.onmessage = (event) => {
+            const data = String(event.data);
+            if (!WS_EXPECT || data.includes(WS_EXPECT)) {
+              clearTimeout(timer);
+              return finish(0, `✅ WebSocket reply OK: ${data.slice(0, 200)}`);
+            }
+            console.log(`Ignoring reply: ${data.slice(0, 200)}`);
+          };
+          EOF
+          i=1
+          while [ "$i" -le 3 ]; do
+            if APP_DIR="$DEPLOY_PATH" node "$SMOKE"; then
+              exit 0
+            fi
+            echo "WebSocket attempt $i/3 failed; sleeping 3s..."
+            sleep 3
+            i=$((i + 1))
+          done
+          exit 1
+
+      - name: Log deploy and prune backups
+        env:
+          KEEP_BACKUPS: ${{ inputs.keep_backups }}
+        run: |
+          set -euo pipefail
+          DEPLOY_LOG_PATH="${DEPLOY_LOG_PATH:-/var/log/ciatec/deploys.log}"
+          sudo mkdir -p "$(dirname "$DEPLOY_LOG_PATH")"
+          LOG_LINE="[${DEPLOY_TIMESTAMP}] [${GITHUB_SHA}] deployed ${SERVICE_NAME} → ${DEPLOY_PATH} (port ${PORT})"
+          echo "$LOG_LINE" | sudo tee -a "$DEPLOY_LOG_PATH" >/dev/null
+          echo "✅ $LOG_LINE"
+
+          PARENT="$(dirname "$DEPLOY_PATH")"
+          BASE="$(basename "$DEPLOY_PATH")"
+          mapfile -t OLD < <(sudo find "$PARENT" -maxdepth 1 -type d -name "${BASE}.bak.*" | sort | head -n "-${KEEP_BACKUPS}")
+          for dir in "${OLD[@]}"; do
+            echo "Pruning old backup: $dir"
+            sudo rm -rf -- "$dir" "${dir}.service"
+          done
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          sudo systemctl status "$SERVICE_NAME" --no-pager || true
+          sudo journalctl -u "$SERVICE_NAME" -n 80 --no-pager || true
+
+      - name: Rollback
+        if: failure() && env.DEPLOY_STARTED == '1'
+        run: |
+          set -uo pipefail
+          DEPLOY_LOG_PATH="${DEPLOY_LOG_PATH:-/var/log/ciatec/deploys.log}"
+          if [ -n "${BACKUP_PATH:-}" ] && [ -d "$BACKUP_PATH" ]; then
+            echo "⚠️  Restoring $BACKUP_PATH → $DEPLOY_PATH"
+            sudo rsync -a --delete "$BACKUP_PATH/" "$DEPLOY_PATH/"
+            if [ -n "${UNIT_BACKUP:-}" ] && [ -f "$UNIT_BACKUP" ]; then
+              sudo install -m 0644 -o root -g root "$UNIT_BACKUP" "$UNIT_PATH"
+            fi
+            sudo systemctl daemon-reload
+            sudo systemctl restart "$SERVICE_NAME"
+            sleep 2
+            sudo systemctl is-active "$SERVICE_NAME" || echo "::warning::Previous version did not come back up either"
+            RESULT="rolled back"
+          else
+            echo "⚠️  First deploy failed: stopping $SERVICE_NAME (files kept in $DEPLOY_PATH for inspection)"
+            sudo systemctl disable --now "$SERVICE_NAME" || true
+            RESULT="first deploy failed, service stopped"
+          fi
+          sudo mkdir -p "$(dirname "$DEPLOY_LOG_PATH")"
+          echo "[${DEPLOY_TIMESTAMP:-unknown}] [${GITHUB_SHA}] FAILED ${SERVICE_NAME}: ${RESULT}" | sudo tee -a "$DEPLOY_LOG_PATH"
+
+      - name: Clean release dir
+        if: always()
+        run: rm -rf "$RELEASE_DIR"

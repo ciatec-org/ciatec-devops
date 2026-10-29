@@ -1,0 +1,30 @@
+# TEMPLATE — copy to a Node.js service repo (HTTP + WebSocket) as:
+#   .github/workflows/deploy.yml
+#
+# Then set service_name, port and the health/WebSocket checks below.
+# Requires: deploy/<service_name>.service in the repo, Node on the host, Nginx vhost already set up
+# (docs/runbooks/add-node-service.md).
+#
+# Secrets: inherit (organization / repo secrets, e.g. DEPLOY_LOG_PATH)
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    uses: ciatec-org/ciatec-devops/.github/workflows/deploy-node-service.yml@main
+    with:
+      service_name: meu-servico     # systemd unit + /opt/<service_name>
+      port: 8790                    # unique on the host (see docs/architecture.md)
+      health_path: /health
+      ws_path: /ws                  # empty to skip the WebSocket smoke
+      ws_message: ""                # optional frame sent after connect, e.g. '{"type":"ping"}'
+      ws_expect: ""                 # optional substring expected in the reply
+      environment: production
+    secrets: inherit

@@ -10,6 +10,7 @@ Reusable workflows to **update CIATec EC2 hosts**. Product repos call these file
 | `deploy-wordpress-network.yml` | Self-hosted (WordPress EC2) | Rede WordPress multisite: backup + `compose pull/up -d` + health + smoke (imagens oficiais, sem build) |
 | `deploy-wordpress-site.yml` | Self-hosted (WordPress EC2) | Sincroniza o tema de um site para o diretório que a rede monta por bind mount |
 | `deploy-webgl.yml` | Self-hosted (Games) | Sync Unity WebGL → Nginx path on Games EC2 |
+| `deploy-node-service.yml` | GitHub-hosted build + self-hosted (Games) | Node.js service (HTTP + WebSocket): `/opt/<service>`, systemd, health + WebSocket smoke, rollback |
 | `deploy-ai-project.yml` | Self-hosted (AI Research) | Create or update a Python project (clone, systemd, Nginx, health) |
 | `deploy-docker.yml` | GitHub-hosted + SSH | Legacy: SSH + scripts under `/opt/ciatec` |
 
@@ -21,6 +22,7 @@ Reusable workflows to **update CIATec EC2 hosts**. Product repos call these file
 
 ### Games (`ciatec-games-prod`)
 - Unity WebGL → `deploy-webgl.yml`
+- Node.js service with WebSocket (process + Nginx vhost) → `deploy-node-service.yml` ([runbook](../../docs/runbooks/add-node-service.md))
 - Docker/Compose → `build-push-ghcr` + `deploy-compose`
 
 ### Core / API (`ec2-ciatec-core` and similar)
