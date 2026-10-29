@@ -12,6 +12,7 @@ chamam workflows daqui ao fazer push em `main`, e a produção na EC2 é atualiz
 | Tipo | Fluxo |
 |------|--------|
 | **Jogos WebGL** | Caller no repo do jogo → `deploy-webgl.yml` → self-hosted runner na EC2 Games → Nginx |
+| **Serviço Node + WebSocket** | Caller no repo → `deploy-node-service.yml` → build no GitHub → self-hosted na EC2 Games → systemd atrás do Nginx. Ver [docs/runbooks/add-node-service.md](docs/runbooks/add-node-service.md) |
 | **API + App (clone no host)** | Caller no `ciatec-core` → `build-push-ghcr.yml` + `deploy-compose.yml` → GHCR → `git pull` + compose |
 | **API (só secrets no host)** | Caller (ex. `ciatec-ht`) → `build-push-ghcr.yml` + `deploy-compose-checkout.yml` → GHCR → checkout + compose |
 | **Rede WordPress multisite** | Caller na `ciatec-wordpress-network` → `deploy-wordpress-network.yml`; caller em cada repo de site → `deploy-wordpress-site.yml`. Ver [docs/runbooks/wordpress-multisite.md](docs/runbooks/wordpress-multisite.md) |
@@ -32,7 +33,7 @@ chamam workflows daqui ao fazer push em `main`, e a produção na EC2 é atualiz
 
 ```
 .cursor/skills/        Skills Agile (agile-pipeline, epic/story/task-breaker)
-.github/workflows/     Reusáveis: build-push-ghcr, deploy-compose, deploy-webgl (+ legado deploy-docker)
+.github/workflows/     Reusáveis: build-push-ghcr, deploy-compose, deploy-webgl, deploy-node-service (+ legado deploy-docker)
 scripts/deploy/        Scripts SSH legado (/opt/ciatec)
 scripts/health/        Health checks
 scripts/rollback/      Placeholder
@@ -61,6 +62,8 @@ Mapa: [docs/repository-map.md](docs/repository-map.md)
 | Template | Destino |
 |----------|---------|
 | [game-deploy-caller.yml](docs/templates/game-deploy-caller.yml) | Repo de jogo → `.github/workflows/deploy.yml` |
+| [node-service-deploy-caller.yml](docs/templates/node-service-deploy-caller.yml) | Serviço Node + WebSocket → `.github/workflows/deploy.yml` |
+| [nginx-node-websocket.conf](docs/templates/nginx-node-websocket.conf) | Vhost Nginx com WebSocket (EC2, uma vez) |
 | [monorepo-deploy-caller.yml](docs/templates/monorepo-deploy-caller.yml) | Referência; no `ciatec-core` usam-se `deploy-api.yml` / `deploy-app.yml` |
 
 ---
@@ -71,4 +74,4 @@ Mapa: [docs/repository-map.md](docs/repository-map.md)
 |--------|-----------|
 | *(nenhum para monorepo GHCR)* | `GITHUB_TOKEN` com `packages: write` / `read` |
 | `EC2_API_HOST` / `EC2_SSH_*` | Só fluxo SSH legado (`deploy-docker.yml`) |
-| `DEPLOY_LOG_PATH` | WebGL (opcional) |
+| `DEPLOY_LOG_PATH` | WebGL e serviço Node (opcional) |
