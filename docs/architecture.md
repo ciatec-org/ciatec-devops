@@ -74,7 +74,6 @@ Registrar aqui antes de escolher a porta de um serviço novo.
 
 | Porta | Serviço | Deploy |
 |-------|---------|--------|
-| 8787 | coinup | Manual (fora deste repo) |
 | 8790 | neverdice | `deploy-node-service.yml` |
 
 ### EC2 API/App
