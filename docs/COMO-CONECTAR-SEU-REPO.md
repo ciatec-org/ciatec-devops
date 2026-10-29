@@ -163,7 +163,8 @@ Opcional: `DEPLOY_LOG_PATH` (`secrets: inherit`).
 
 **Serviço Node + WebSocket**
 
-- [ ] Node na EC2 Games com a mesma versão major do `node_version`
+- [ ] Node do sistema na EC2 Games atendendo o `engines` do `package.json`
+- [ ] `.nvmrc` no repo com a versão do build
 - [ ] DNS + vhost Nginx com `Upgrade`/`Connection` no caminho do WebSocket + certbot
 - [ ] Porta livre e registrada em `architecture.md`
 - [ ] `deploy/<service>.service` e `GET /health` no repo

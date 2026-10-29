@@ -23,9 +23,9 @@ O Nginx **não** é tocado pelo workflow: o vhost é configurado uma vez, à mã
 
 ### Na EC2 Games
 
-- Node.js no `PATH` do runner e em `/usr/bin/env node`, mesma versão major de `node_version` (default 22):
+- Node.js instalado no sistema (`/usr/bin/node`, não `nvm` de um usuário): o runner e o `www-data` da unit precisam achá-lo. A versão precisa atender o `engines` do `package.json` do serviço; não precisa ser a mesma do build.
   ```bash
-  node -v
+  which node && node -v
   ```
 - `rsync`, `curl` e sudo sem senha para o usuário do runner (mesmo requisito do `deploy-webgl.yml`).
 - Porta livre e registrada em [architecture.md](../architecture.md#portas-locais-na-ec2-games):
@@ -39,7 +39,8 @@ O Nginx **não** é tocado pelo workflow: o vhost é configurado uma vez, à mã
 |---------|----------|
 | `deploy/<service>.service` | Unit systemd (exemplo abaixo) |
 | `.github/workflows/deploy.yml` | Caller: [`node-service-deploy-caller.yml`](../templates/node-service-deploy-caller.yml) |
-| `package.json` + `package-lock.json` | `npm test`, `npm run build`; dependências de runtime em `dependencies` |
+| `package.json` + `package-lock.json` | `npm test`, `npm run build`; dependências de runtime em `dependencies`; `engines.node` com o mínimo para rodar |
+| `.nvmrc` | Versão do Node do build e do dev (ex.: `22`) |
 | Rota de health | `GET /health` → 200, sem tocar em banco ou estado |
 
 Exemplo de unit (o processo só escuta em `127.0.0.1`; quem atende a internet é o Nginx):
@@ -111,7 +112,7 @@ Inputs opcionais mais usados:
 | `artifact_paths` | `dist`, `server`, `package.json`, `package-lock.json` | Outra estrutura de pastas |
 | `deploy_path` | `/opt/<service_name>` | Raramente |
 | `test_command` / `build_command` | `npm test` / `npm run build` | Vazio para pular |
-| `node_version` | `22` | Acompanhar a versão instalada na EC2 |
+| `node_version` | vazio: lê `.nvmrc` / `.node-version`, senão `22` | Só para forçar uma versão diferente da do repo |
 | `keep_backups` | `3` | Mais histórico de rollback |
 
 ### 4. Primeiro deploy
